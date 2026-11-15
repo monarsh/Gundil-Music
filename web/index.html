@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0d13">
+<title>Gundil Music</title>
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <a class="brand" href="#/"><img src="icon.svg" alt="" width="28" height="28"><span>Gundil Music</span></a>
+    <nav id="nav"></nav>
+    <div class="side-head">
+      <span>Playlists</span>
+      <button class="icon-btn" data-act="new-playlist" aria-label="New playlist" title="New playlist"></button>
+    </div>
+    <div id="side-playlists"></div>
+  </aside>
+
+  <div id="content">
+    <header id="topbar">
+      <a class="brand brand-mobile" href="#/"><img src="icon.svg" alt="Gundil Music" width="28" height="28"></a>
+      <label class="search">
+        <span class="search-icon"></span>
+        <input id="search" type="search" placeholder="Search songs, albums, artists" autocomplete="off" aria-label="Search">
+      </label>
+      <button id="output-btn" class="pill-btn" data-act="devices" title="Speakers and Bluetooth">
+        <span class="ico"></span><span id="output-label">This device</span>
+      </button>
+    </header>
+    <main id="view" tabindex="-1"></main>
+  </div>
+
+  <footer id="player" class="empty">
+    <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+    <div class="p-track" data-act="open-now">
+      <div id="p-art" class="art"></div>
+      <div class="p-text">
+        <div id="p-title" class="p-title">Nothing playing</div>
+        <div id="p-sub" class="p-sub">Pick a song to start</div>
+      </div>
+      <button id="p-like" class="icon-btn like desktop-only" data-act="like-current" aria-label="Like"></button>
+    </div>
+    <div class="p-controls">
+      <button id="p-shuffle" class="icon-btn desktop-only" data-act="shuffle" aria-label="Shuffle" title="Shuffle"></button>
+      <button class="icon-btn desktop-only" data-act="prev" aria-label="Previous" id="p-prev"></button>
+      <button id="p-play" class="icon-btn play-btn" data-act="toggle" aria-label="Play"></button>
+      <button class="icon-btn" data-act="next" aria-label="Next" id="p-next"></button>
+      <button id="p-repeat" class="icon-btn desktop-only" data-act="repeat" aria-label="Repeat" title="Repeat"></button>
+    </div>
+    <div class="p-right desktop-only">
+      <span id="p-time" class="p-time"></span>
+      <span class="vol-ico"></span>
+      <input id="volume" type="range" min="0" max="100" value="80" aria-label="Volume">
+      <button class="icon-btn" data-act="open-now" aria-label="Queue" title="Queue" id="p-queue"></button>
+    </div>
+  </footer>
+
+  <nav id="tabbar"></nav>
+</div>
+
+<section id="now" hidden>
+  <header class="now-head">
+    <button class="icon-btn" data-act="close-now" aria-label="Close" id="now-close"></button>
+    <span id="now-output" class="now-output"></span>
+    <button class="pill-btn" data-act="devices"><span class="ico"></span><span>Speakers</span></button>
+  </header>
+  <div class="now-body">
+    <div class="now-main">
+      <div id="now-art" class="art now-art"></div>
+      <div class="now-meta">
+        <div class="now-text">
+          <div id="now-title" class="now-title"></div>
+          <div id="now-sub" class="now-sub"></div>
+        </div>
+        <button id="now-like" class="icon-btn like" data-act="like-current" aria-label="Like"></button>
+      </div>
+      <input id="now-seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+      <div class="now-times"><span id="now-pos">0:00</span><span id="now-dur">0:00</span></div>
+      <div class="now-controls">
+        <button id="now-shuffle" class="icon-btn" data-act="shuffle" aria-label="Shuffle"></button>
+        <button class="icon-btn big" data-act="prev" aria-label="Previous" id="now-prev"></button>
+        <button id="now-play" class="icon-btn play-btn big" data-act="toggle" aria-label="Play"></button>
+        <button class="icon-btn big" data-act="next" aria-label="Next" id="now-next"></button>
+        <button id="now-repeat" class="icon-btn" data-act="repeat" aria-label="Repeat"></button>
+      </div>
+    </div>
+    <div class="now-queue">
+      <h2>Up next</h2>
+      <div id="queue"></div>
+    </div>
+  </div>
+</section>
+
+<div id="menu" hidden></div>
+<dialog id="devices"></dialog>
+<dialog id="prompt"></dialog>
+<div id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
