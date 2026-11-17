@@ -13,9 +13,14 @@ fail=0
 shot() { adb exec-out screencap -p > "$out/$1.png" || true; }
 alive() { adb shell pidof "$pkg" >/dev/null 2>&1; }
 forward() {
-  local pid sock
-  pid=$(adb shell pidof "$pkg" | tr -d '\r')
-  sock=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o "webview_devtools_remote_$pid" | head -1)
+  # Wait for the app's WebView debugging socket, then forward it to :9222.
+  local pid sock i
+  for i in $(seq 30); do
+    pid=$(adb shell pidof "$pkg" | tr -d '\r')
+    sock=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o "webview_devtools_remote_${pid:-x}" | head -1)
+    [ -n "$sock" ] && break
+    sleep 2
+  done
   adb forward --remove-all >/dev/null 2>&1 || true
   [ -n "$sock" ] && adb forward tcp:9222 "localabstract:$sock" >/dev/null
 }

@@ -3,9 +3,14 @@
 //   node drive.js play | node drive.js state
 const mode = process.argv[2] || 'state';
 (async () => {
-  const pages = await (await fetch('http://127.0.0.1:9222/json')).json();
-  const page = pages.find(p => p.url.startsWith('http://10.0.2.2')) || pages[0];
-  if (!page) throw new Error('no WebView page found');
+  // The WebView's debugging target can take a while to appear after launch.
+  let page, pages = [];
+  for (let i = 0; i < 45 && !page; i++) {
+    try { pages = await (await fetch('http://127.0.0.1:9222/json')).json(); } catch { pages = []; }
+    page = pages.find(p => p.url.startsWith('http://10.0.2.2'));
+    if (!page) await new Promise(r => setTimeout(r, 2000));
+  }
+  if (!page) throw new Error('no WebView page found; targets: ' + JSON.stringify(pages.map(p => p.url)));
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let n = 0;
   const pending = new Map();
