@@ -544,12 +544,18 @@ audio.addEventListener('ended', async () => {
   S.paused = true;
   renderPlayer();
 });
-audio.addEventListener('error', () => {
+audio.addEventListener('error', async () => {
   if (isServer() || !audio.getAttribute('src')) return;
   S.loading = false;
   errorsInRow++;
   const t = current();
-  toast(`Couldn't play “${t ? t.title : 'this song'}”`);
+  // Ask the server why, so problems like YouTube's sign-in check are explained.
+  let why = '';
+  try {
+    const r = await fetch(audio.getAttribute('src'), { headers: { Range: 'bytes=0-1' } });
+    if (!r.ok) why = ((await r.json().catch(() => ({}))).error || '');
+  } catch { /* offline */ }
+  toast(why && /sign in/i.test(why) ? why : `Couldn't play “${t ? t.title : 'this song'}”`);
   if (errorsInRow < 4 && S.index + 1 < S.queue.length) setTimeout(() => { if (!isServer()) { S.index++; loadLocal(true); } }, 1200);
   else { S.paused = true; renderPlayer(); }
 });

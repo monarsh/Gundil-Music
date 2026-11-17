@@ -32,6 +32,7 @@ except ImportError as e:  # reported to the app instead of crashing
     MISSING = str(e)
 
 LANG = os.environ.get("GUNDIL_LANG", "en")
+COOKIES = os.environ.get("GUNDIL_COOKIES", "")  # cookies.txt for when YouTube asks to sign in
 REGION = os.environ.get("GUNDIL_REGION", "")
 
 _out_lock = threading.Lock()
@@ -406,6 +407,7 @@ def m_stream(args):
                 "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
                 "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best",
                 "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
+                **({"cookiefile": COOKIES} if COOKIES else {}),
             })
         ydl = _ydl
     info = ydl.extract_info("https://www.youtube.com/watch?v=" + vid, download=False)
@@ -448,6 +450,10 @@ def handle(req):
         msg = str(e) or e.__class__.__name__
         if "yt_dlp" in sys.modules and isinstance(e, getattr(yt_dlp.utils, "DownloadError", ())):
             msg = msg.replace("ERROR: ", "")
+            if "confirm you" in msg and "not a bot" in msg:
+                msg = ("YouTube wants this server to sign in before it plays songs (this happens on some networks). "
+                       "Export your YouTube cookies to a cookies.txt file and start Gundil Music with -cookies <file>. "
+                       "See the README.")
         traceback.print_exc(file=sys.stderr)
         send({"id": rid, "error": msg[:500]})
 

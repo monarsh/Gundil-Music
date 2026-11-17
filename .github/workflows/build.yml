@@ -43,9 +43,12 @@ jobs:
           cp scripts/install.sh scripts/install-termux.sh scripts/update-youtube.sh dist/
       - name: Run the ARM builds under emulation
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static >/dev/null
-          qemu-aarch64-static dist/gundil-music-linux-arm64 -version
-          qemu-arm-static dist/gundil-music-linux-armv7 -version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static >/dev/null 2>&1 || sudo apt-get install -y -qq qemu-user >/dev/null
+          a64=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
+          a32=$(command -v qemu-arm-static || command -v qemu-arm)
+          "$a64" dist/gundil-music-linux-arm64 -version
+          "$a32" dist/gundil-music-linux-armv7 -version
       - uses: actions/upload-artifact@v4
         with:
           name: binaries

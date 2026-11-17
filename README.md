@@ -98,8 +98,16 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-mpv` | `GUNDIL_MPV` | `mpv` in PATH | mpv for playing on the server |
 | `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
 | `-open` | | on for Windows | Open the app in the browser after starting |
+| `-cookies` | `GUNDIL_COOKIES` | `<data>/cookies.txt` if present | YouTube cookies, for when YouTube asks the server to sign in |
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
 | | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
+
+If songs fail with "YouTube wants this server to sign in", YouTube is
+challenging your server's network (common on cloud servers and VPNs, rare at
+home). Export cookies from a browser where you're signed in to YouTube, as
+described in yt-dlp's
+[cookie guide](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+Save them as `cookies.txt` in the data folder, or pass `-cookies <file>`.
 
 Without `-auth`, anyone on your network can use the player and manage
 Bluetooth. Don't expose the port to the internet.

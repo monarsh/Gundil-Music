@@ -56,6 +56,7 @@ func main() {
 	python := flag.String("python", env("GUNDIL_PYTHON", ""), "Python 3 with ytmusicapi and yt-dlp (default: python3 in PATH)")
 	helper := flag.String("helper", env("GUNDIL_HELPER", ""), "use this helper script instead of the built-in one")
 	mpvPath := flag.String("mpv", env("GUNDIL_MPV", ""), "path to mpv (default: look in PATH)")
+	cookies := flag.String("cookies", env("GUNDIL_COOKIES", ""), "cookies.txt for YouTube, if it asks this server to sign in")
 	open := flag.Bool("open", runtime.GOOS == "windows", "open the app in the web browser once started")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -68,6 +69,16 @@ func main() {
 		log.Fatalf("cannot create data folder: %v", err)
 	}
 
+	if *cookies == "" {
+		if p := filepath.Join(*dataDir, "cookies.txt"); fileExists(p) {
+			*cookies = p
+		}
+	}
+	if *cookies != "" {
+		abs, _ := filepath.Abs(*cookies)
+		os.Setenv("GUNDIL_COOKIES", abs) // read by the helper
+		log.Printf("using YouTube cookies from %s", abs)
+	}
 	ytc, err := yt.New(*python, *helper, *dataDir)
 	if err != nil {
 		log.Fatalf("cannot set up the YouTube helper: %v", err)
