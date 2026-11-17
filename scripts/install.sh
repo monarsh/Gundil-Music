@@ -23,7 +23,7 @@ case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
   aarch64 | arm64) ARCH=arm64 ;;
   armv7l | armv8l) ARCH=armv7 ;;
-  armv6l) ARCH=armv6 ;;
+  armv6l) echo "ARMv6 boards (Raspberry Pi 1 / Zero) can't play YouTube: yt-dlp has no JavaScript runtime there." >&2; exit 1 ;;
   *) echo "Unsupported CPU: $(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -61,8 +61,6 @@ case "$ARCH" in
     ln -sf "$APP/node/bin/node" "$APP/bin/node"
     "$APP/bin/node" --version
     ;;
-  armv6)
-    echo "    No supported JavaScript runtime exists for ARMv6 (Pi 1 / Zero). Most YouTube songs will not play." ;;
 esac
 
 echo "==> Installing the gundil-music binary"

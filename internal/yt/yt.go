@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -71,7 +72,13 @@ type Client struct {
 // empty to use the built-in helper, which is written into dataDir.
 func New(python, script, dataDir string) (*Client, error) {
 	if python == "" {
-		for _, name := range []string{"python3", "python"} {
+		names := []string{"python3", "python"}
+		if runtime.GOOS == "windows" {
+			// "py" only exists with a real Python install; python3.exe is often
+			// just the Microsoft Store shortcut.
+			names = []string{"py", "python", "python3"}
+		}
+		for _, name := range names {
 			if p, err := exec.LookPath(name); err == nil {
 				python = p
 				break

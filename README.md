@@ -31,7 +31,7 @@ server, not in a YouTube account.
 | Headless Orange Pi PC | `linux-armv7` (Armbian), set up by `install.sh`. Needs a USB Bluetooth dongle | Same as the Pi |
 | Linux desktop | `linux-amd64`, open the web app | Pair and connect from the app, or use the system settings |
 | Windows | `windows-amd64.exe`, open the web app | Pair in Windows settings; audio follows |
-| Android | Open the web app in Chrome and add it to the home screen | Pair in Android settings; lock-screen and headset buttons work |
+| Android | Open the web app in Chrome and add it to the home screen. To make the phone the server, run `install-termux.sh` in Termux | Pair in Android settings; lock-screen and headset buttons work |
 
 Pi 1 and Pi Zero (ARMv6) are not supported for YouTube playback: no JavaScript
 runtime that yt-dlp accepts runs on them.
@@ -55,7 +55,7 @@ runtime that yt-dlp accepts runs on them.
 On Raspberry Pi OS or Armbian, as your normal user:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/monarsh/Gundil-Music/main/scripts/install.sh
+curl -fsSLO https://github.com/monarsh/Gundil-Music/releases/latest/download/install.sh
 bash install.sh                        # downloads the latest release
 # or: bash install.sh ./gundil-music-linux-armv7
 ```
