@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gundil Music
+Comment=Stream YouTube Music, play on Bluetooth speakers
+Exec=gundil-music
+Icon=gundil-music
+Categories=AudioVideo;Audio;Player;
+Terminal=false

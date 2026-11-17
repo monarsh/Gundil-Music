@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Connect to Gundil Music</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #030303; color: #fff; font: 16px/1.45 Roboto, "Noto Sans", Arial, sans-serif; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 440px; padding: 48px 24px 32px; display: grid; gap: 20px; align-content: start; }
+  .logo { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 700; }
+  h1 { font-size: 26px; margin: 12px 0 0; line-height: 1.25; }
+  p { margin: 0; color: rgba(255,255,255,.7); }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; height: 48px; border-radius: 24px; border: 0; background: rgba(255,255,255,.1); color: #fff; font: inherit; padding: 0 20px; outline: none; }
+  input:focus { background: #212121; box-shadow: 0 0 0 1px rgba(255,255,255,.3); }
+  button { height: 48px; border-radius: 24px; border: 0; padding: 0 20px; font: inherit; font-weight: 500; cursor: pointer; }
+  .primary { background: #fff; color: #030303; }
+  .outline { background: none; color: #fff; border: 1px solid rgba(255,255,255,.25); width: 100%; }
+  .error { background: #3b1414; border: 1px solid #6b2020; border-radius: 8px; padding: 12px 14px; color: #fff; }
+  .servers { display: grid; gap: 8px; }
+  .server { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; background: #1d1d1d; color: #fff; height: auto; border-radius: 12px; padding: 14px 16px; }
+  .server b { display: block; font-weight: 500; }
+  .server span { color: rgba(255,255,255,.6); font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3ea6ff; flex: none; }
+  .spin { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.2); border-top-color: #fff; border-radius: 50%; animation: s .8s linear infinite; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  small { color: rgba(255,255,255,.5); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo"><img src="icon.svg" width="32" height="32" alt="">Gundil Music</div>
+  <h1>Connect to your music server</h1>
+  <p>Gundil Music plays from a server on your network, such as a Raspberry Pi, an Orange Pi or a PC running Gundil Music.</p>
+  <div class="error" id="error" hidden></div>
+  <form id="form">
+    <input id="addr" placeholder="192.168.1.20 or pi.local" inputmode="url" autocapitalize="off" autocomplete="off" spellcheck="false" aria-label="Server address">
+    <button class="primary" id="go">Connect</button>
+  </form>
+  <button class="outline" id="scan">Find servers on this Wi-Fi</button>
+  <div class="servers" id="servers"></div>
+  <small id="ver"></small>
+</main>
+<script>
+  const A = window.GundilAndroid;
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function showError(msg) { $('#error').textContent = msg; $('#error').hidden = !msg; }
+  const m = location.hash.match(/error=([^&]*)/);
+  if (m) showError(decodeURIComponent(m[1]));
+  if (A) {
+    const s = A.server();
+    if (s) $('#addr').value = s.replace(/^https?:\/\//, '').replace(/:8338$/, '');
+    $('#ver').textContent = 'Version ' + A.version();
+  }
+  $('#form').addEventListener('submit', e => {
+    e.preventDefault();
+    showError('');
+    $('#go').disabled = true;
+    $('#go').innerHTML = '<span class="spin"></span>Connecting';
+    A.connect($('#addr').value);
+  });
+  window.onConnectError = msg => {
+    showError(msg);
+    $('#go').disabled = false;
+    $('#go').textContent = 'Connect';
+  };
+  function scan() {
+    $('#scan').disabled = true;
+    $('#scan').innerHTML = '<span class="spin"></span>Looking for servers…';
+    $('#servers').innerHTML = '';
+    A.scan();
+  }
+  $('#scan').addEventListener('click', scan);
+  window.onServers = list => {
+    $('#scan').disabled = false;
+    $('#scan').textContent = 'Search again';
+    $('#servers').innerHTML = list.length
+      ? list.map(s => `<button class="server" data-url="${esc(s.url)}"><span class="dot"></span><div><b>${esc(s.hostname || s.url)}</b><span>${esc(s.url.replace('http://', ''))}${s.locked ? ' · needs sign-in' : ''}${s.version ? ' · ' + esc(s.version) : ''}</span></div></button>`).join('')
+      : '<p>No servers found. Check that the server is running and on the same Wi-Fi, or type its address above.</p>';
+  };
+  $('#servers').addEventListener('click', e => {
+    const b = e.target.closest('.server');
+    if (!b) return;
+    showError('');
+    A.connect(b.dataset.url);
+  });
+  if (A && !A.server()) scan();
+</script>
+</body>
+</html>

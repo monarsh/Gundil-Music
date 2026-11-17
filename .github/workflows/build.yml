@@ -8,14 +8,20 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release, e.g. v1.0 (needs docs/release-notes/<version>.md)
+        description: Version to release, e.g. v1.1 (needs docs/release-notes/<version>.md)
         required: true
 
 permissions:
   contents: write
 
+env:
+  # Release version for tag pushes and manual releases; empty for plain branch builds.
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
-  build:
+  binaries:
+    name: Linux, Raspberry Pi, Orange Pi, Termux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,34 +30,183 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - name: Check
         run: |
           go vet ./...
-          python -m py_compile internal/yt/helper.py
+          python3 -m py_compile internal/yt/helper.py
           node --check web/app.js
-          bash -n scripts/install.sh scripts/install-termux.sh scripts/update-youtube.sh
-      - name: Build all platforms
-        env:
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
-        run: ./scripts/build-all.sh
-      - name: Add install scripts
-        run: cp scripts/install.sh scripts/install-termux.sh scripts/update-youtube.sh dist/
-      - name: Checksums
-        run: cd dist && sha256sum * > SHA256SUMS.txt
+          for f in scripts/*.sh; do bash -n "$f"; done
+      - name: Build
+        run: |
+          ./scripts/build-all.sh
+          rm dist/*windows*   # Windows ships as a self-contained zip instead
+          cp scripts/install.sh scripts/install-termux.sh scripts/update-youtube.sh dist/
+      - name: Run the ARM builds under emulation
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static >/dev/null
+          qemu-aarch64-static dist/gundil-music-linux-arm64 -version
+          qemu-arm-static dist/gundil-music-linux-armv7 -version
       - uses: actions/upload-artifact@v4
         with:
-          name: gundil-music
+          name: binaries
           path: dist/
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+
+  appimage:
+    name: Linux desktop AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          tag_name: ${{ inputs.version || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build AppImage
+        run: ./scripts/package-appimage.sh
+      - name: Smoke test
+        run: |
+          app=$(ls dist/*.AppImage)
+          APPIMAGE_EXTRACT_AND_RUN=1 "$app" -open=false -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" > server.log 2>&1 &
+          for i in $(seq 60); do curl -sf localhost:8338/api/info > info.json && break; sleep 1; done
+          cat info.json; echo
+          python3 - <<'PY'
+          import json
+          y = json.load(open('info.json'))['youtube']
+          assert y.get('ok'), y
+          assert y.get('js'), 'no JavaScript runtime found: %s' % y
+          print('bundled runtime OK:', y)
+          PY
+      - name: Real YouTube check (informational)
+        continue-on-error: true
+        run: |
+          id=$(curl -sf 'localhost:8338/api/yt/search?q=daft%20punk&filter=songs' | python3 -c "import json,sys; print(json.load(sys.stdin)['items'][0]['videoId'])")
+          echo "first song: $id"
+          bytes=$(curl -s -o /dev/null -w '%{size_download}' -H 'Range: bytes=0-199999' "localhost:8338/api/stream/$id")
+          echo "streamed $bytes bytes"
+          tail -20 server.log
+          [ "$bytes" -gt 100000 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/*.AppImage
+
+  windows:
+    name: Windows x86-64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build zip
+        run: ./scripts/package-windows.sh
+      - name: Smoke test
+        run: |
+          cd "build/Gundil Music"
+          ./gundil-music.exe -open=false -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" > ../server.log 2>&1 &
+          for i in $(seq 60); do curl -sf localhost:8338/api/info > ../info.json && break; sleep 1; done
+          cat ../info.json; echo
+          grep -q '"ok":true' ../info.json
+          grep -q '"js":\["' ../info.json
+      - name: Real YouTube check (informational)
+        continue-on-error: true
+        run: |
+          id=$(curl -sf 'localhost:8338/api/yt/search?q=daft%20punk&filter=songs' | python -c "import json,sys; print(json.load(sys.stdin)['items'][0]['videoId'])")
+          echo "first song: $id"
+          bytes=$(curl -s -o /dev/null -w '%{size_download}' -H 'Range: bytes=0-199999' "localhost:8338/api/stream/$id")
+          echo "streamed $bytes bytes"
+          [ "$bytes" -gt 100000 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  android:
+    name: Android APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ks="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$ks"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: signing with a one-off key. Installing a later build will need an uninstall first."
+            pw=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$ks" -storepass "$pw" -keypass "$pw" -alias gundil -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Gundil Music" -noprompt
+            echo "ANDROID_KEYSTORE_PASSWORD=$pw" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=gundil" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$pw" >> "$GITHUB_ENV"
+          fi
+          echo "ANDROID_KEYSTORE=$ks" >> "$GITHUB_ENV"
+      - name: Build APKs
+        run: |
+          v="${VERSION:-v0.0.$GITHUB_RUN_NUMBER}"
+          name="${v#v}"
+          IFS=. read -r major minor patch <<< "$name"
+          code=$(( ${major:-0} * 10000 + ${minor:-0} * 100 + ${patch:-0} ))
+          [ "$code" -gt 0 ] || code=$GITHUB_RUN_NUMBER
+          gradle -p android --no-daemon assembleRelease -PversionName="$name" -PversionCode="$code"
+          mkdir -p dist
+          out=android/app/build/outputs/apk/release
+          ls -la $out
+          cp $out/app-armeabi-v7a-release.apk "dist/gundil-music-$v-android-armv7.apk"
+          cp $out/app-arm64-v8a-release.apk "dist/gundil-music-$v-android-arm64.apk"
+          cp $out/app-universal-release.apk "dist/gundil-music-$v-android-universal.apk"
+      - name: Verify APKs
+        run: |
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          for apk in dist/*.apk; do
+            echo "== $apk"
+            "$bt/apksigner" verify --print-certs "$apk" | head -3
+            "$bt/aapt" dump badging "$apk" | grep -E "^package|^sdkVersion|^targetSdkVersion|^native-code" || true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [binaries, appimage, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          name: Gundil Music ${{ inputs.version || github.ref_name }}
-          body_path: docs/release-notes/${{ inputs.version || github.ref_name }}.md
+          name: Gundil Music ${{ env.VERSION }}
+          body_path: docs/release-notes/${{ env.VERSION }}.md
           make_latest: true
           files: dist/*

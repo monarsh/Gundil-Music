@@ -1,10 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Runs the Gundil Music server on an Android phone, inside Termux
-# (install Termux from F-Droid). Most people don't need this: to use Gundil
-# Music on Android, open your server's address in Chrome and "Add to Home
-# screen". This is for when the phone itself should be the server.
+# (install Termux from F-Droid). Most people don't need this: the Gundil
+# Music APK connects to a server elsewhere. This is for when the phone
+# itself should be the server; the APK finds it on this phone.
 #
-#   bash install-termux.sh [path/to/gundil-music-android-arm64]
+#   bash install-termux.sh [path/to/gundil-music-termux-arm64]
 set -euo pipefail
 
 REPO="monarsh/Gundil-Music"
@@ -20,7 +20,7 @@ echo "==> Installing gundil-music"
 if [ -n "${1:-}" ]; then
   cp "$1" "$PREFIX/bin/gundil-music"
 else
-  curl -fL "https://github.com/$REPO/releases/latest/download/gundil-music-android-arm64" -o "$PREFIX/bin/gundil-music"
+  curl -fL "https://github.com/$REPO/releases/latest/download/gundil-music-termux-arm64" -o "$PREFIX/bin/gundil-music"
 fi
 chmod 755 "$PREFIX/bin/gundil-music"
 

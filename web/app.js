@@ -656,7 +656,36 @@ function renderPlayer() {
   renderVolume();
   renderProgress();
   if (S.ppOpen && S.ppTab === 'upnext' && shownQueue !== S.queueVer + ':' + S.index) renderPPTab();
+  reportToAndroid();
 }
+
+/* The Android app shows a media notification and keeps playing in the background. */
+const android = window.GundilAndroid;
+let lastReport = '';
+function reportToAndroid() {
+  if (!android) return;
+  const t = current();
+  const msg = JSON.stringify(t ? {
+    hasTrack: true, title: t.title, artist: names(t), thumb: sized(t.thumb, 512),
+    playing: !!(S.playing && !S.paused), local: !isServer(), where: isServer() ? `Playing on ${S.info.hostname || 'server'}` : '',
+  } : { hasTrack: false });
+  if (msg === lastReport) return;
+  lastReport = msg;
+  try { android.update(msg); } catch { /* old app version */ }
+}
+window.gundilControl = cmd => {
+  const playingNow = S.playing && !S.paused;
+  if (cmd === 'toggle' || (cmd === 'play' && !playingNow) || (cmd === 'pause' && playingNow)) toggle();
+  else if (cmd === 'next') next();
+  else if (cmd === 'prev') prev();
+};
+window.gundilBack = () => {
+  if (!$('#menu').hidden) { hideMenu(); return true; }
+  if ($('dialog[open]')) { $('dialog[open]').close(); return true; }
+  if ($('#app').classList.contains('searching')) { $('#app').classList.remove('searching'); closeSuggest(); return true; }
+  if (S.ppOpen) { closePlayer(); return true; }
+  return false;
+};
 
 function markPlaying() {
   for (const el of $$('.row.playing')) el.classList.remove('playing');
@@ -1629,6 +1658,7 @@ document.addEventListener('click', async e => {
           { icon: 'history', label: 'History', run: () => { location.hash = '#/library/history'; } },
           { icon: 'cast', label: 'Speakers & Bluetooth', run: openCast },
           { icon: 'info', label: 'About', run: aboutDialog },
+          android ? { icon: 'speaker', label: 'Change server', run: () => android.changeServer() } : null,
         ], actEl);
       case 'search-open':
         $('#app').classList.add('searching');

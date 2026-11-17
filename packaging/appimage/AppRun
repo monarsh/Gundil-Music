@@ -1,0 +1,5 @@
+#!/bin/sh
+# Starts Gundil Music and opens it in the browser. Pass -open=false to run it
+# headless, or any other gundil-music flag (see -help).
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/gundil-music" -open "$@"

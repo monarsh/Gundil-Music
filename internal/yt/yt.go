@@ -72,6 +72,9 @@ type Client struct {
 // empty to use the built-in helper, which is written into dataDir.
 func New(python, script, dataDir string) (*Client, error) {
 	if python == "" {
+		python = bundledPython()
+	}
+	if python == "" {
 		names := []string{"python3", "python"}
 		if runtime.GOOS == "windows" {
 			// "py" only exists with a real Python install; python3.exe is often
@@ -100,12 +103,47 @@ func New(python, script, dataDir string) (*Client, error) {
 	}, nil
 }
 
+// bundleDir returns <folder of this program>/name if it exists. The Windows
+// zip and the AppImage ship Python and Deno there, so nothing else needs
+// installing.
+func bundleDir(name string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	dir := filepath.Join(filepath.Dir(exe), name)
+	if st, err := os.Stat(dir); err == nil && st.IsDir() {
+		return dir
+	}
+	return ""
+}
+
+func bundledPython() string {
+	dir := bundleDir("python")
+	if dir == "" {
+		return ""
+	}
+	for _, p := range []string{filepath.Join(dir, "python.exe"), filepath.Join(dir, "bin", "python3")} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 func (c *Client) start() error {
 	if c.python == "" {
 		return errors.New("Python 3 was not found on the server. Install it, then run: pip install -U ytmusicapi \"yt-dlp[default]\"")
 	}
 	cmd := exec.Command(c.python, "-u", c.script)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+	if dir := bundleDir("runtime"); dir != "" {
+		// A JavaScript runtime shipped next to the program (Windows zip, AppImage).
+		cmd.Env = append(cmd.Env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err

@@ -13,5 +13,5 @@ build gundil-music-linux-amd64 linux amd64
 build gundil-music-linux-arm64 linux arm64          # Raspberry Pi 3/4/5 (64-bit OS)
 build gundil-music-linux-armv7 linux arm 7          # Orange Pi PC, Raspberry Pi 2/3/4 (32-bit OS)
 build gundil-music-windows-amd64.exe windows amd64
-build gundil-music-android-arm64 android arm64      # Android phones, in Termux
+build gundil-music-termux-arm64 android arm64       # server on an Android phone, in Termux
 ls -lh dist
