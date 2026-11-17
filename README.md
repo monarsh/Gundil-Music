@@ -25,13 +25,20 @@ server, not in a YouTube account.
 
 ## Platforms
 
-| Where | How it runs | Bluetooth |
+Downloads are on the [releases page](https://github.com/monarsh/Gundil-Music/releases/latest).
+
+| Where | Download | Bluetooth |
 |---|---|---|
 | Headless Raspberry Pi 3/4/5 | `linux-arm64` (64-bit OS) or `linux-armv7`, set up by `install.sh` | Pair and connect from the app; the Pi plays to the speaker |
 | Headless Orange Pi PC | `linux-armv7` (Armbian), set up by `install.sh`. Needs a USB Bluetooth dongle | Same as the Pi |
-| Linux desktop | `linux-amd64`, open the web app | Pair and connect from the app, or use the system settings |
-| Windows | `windows-amd64.exe`, open the web app | Pair in Windows settings; audio follows |
-| Android | Open the web app in Chrome and add it to the home screen. To make the phone the server, run `install-termux.sh` in Termux | Pair in Android settings; lock-screen and headset buttons work |
+| Linux desktop | `…-x86_64.AppImage` (everything bundled), or `linux-amd64` with your own Python | Pair and connect from the app, or use the system settings |
+| Windows 10/11 | `…-windows-x86_64.zip` (everything bundled): unzip, run `gundil-music.exe` | Pair in Windows settings; audio follows |
+| Android | `…-android-arm64.apk` (most phones), `-armv7.apk` (older 32-bit phones) or `-universal.apk`: the player app for your server | Pair in Android settings; notification, lock-screen and headset controls work |
+| Android as the server | `termux-arm64` with `install-termux.sh`, in Termux | Pair in Android settings |
+
+The Android app plays from a Gundil Music server on your network (a Pi, an
+Orange Pi or a PC). It finds servers on the Wi-Fi by itself and keeps playing
+with the screen off.
 
 Pi 1 and Pi Zero (ARMv6) are not supported for YouTube playback: no JavaScript
 runtime that yt-dlp accepts runs on them.
@@ -47,7 +54,8 @@ runtime that yt-dlp accepts runs on them.
   Bluetooth speakers).
 - **BlueZ** (`bluetoothctl`), only for pairing Bluetooth speakers from the app (Linux).
 
-`install.sh` sets all of this up on a Pi. Elsewhere, install them yourself.
+`install.sh` sets all of this up on a Pi, and the Windows zip and the AppImage
+carry Python, the libraries and Deno with them. Elsewhere, install them yourself.
 **About → YouTube Music** in the app (avatar menu) shows what the server found.
 
 ## Headless Raspberry Pi / Orange Pi
@@ -89,6 +97,7 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-python` | `GUNDIL_PYTHON` | `python3` in PATH | Python that has ytmusicapi and yt-dlp |
 | `-mpv` | `GUNDIL_MPV` | `mpv` in PATH | mpv for playing on the server |
 | `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
+| `-open` | | on for Windows | Open the app in the browser after starting |
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
 | | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
 
@@ -112,8 +121,18 @@ Needs Go 1.22 or newer.
 
 ```sh
 go build -o gundil-music .      # this machine
-./scripts/build-all.sh          # every platform, into dist/
+./scripts/build-all.sh          # server binaries for every platform, into dist/
+./scripts/package-appimage.sh   # Linux AppImage with Python and Deno bundled (needs gh)
+./scripts/package-windows.sh    # Windows zip with Python and Deno bundled (run on Windows)
+gradle -p android assembleRelease   # Android APKs (needs the Android SDK and Gradle 8.14)
 ```
+
+CI (`.github/workflows/build.yml`) builds and smoke-tests all of these. To
+publish a release, add `docs/release-notes/<version>.md`, then push a
+`<version>` tag or run the workflow by hand with that version. To keep Android
+updates installable over each other, add the repository secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD`. Without them, each release is signed with a new key.
 
 The web app in `web/` is plain HTML, CSS and JavaScript, and the YouTube helper
 (`internal/yt/helper.py`) is a Python script. Both are embedded in the binary.
@@ -129,5 +148,7 @@ internal/player       server-side playback through mpv, with autoplay
 internal/bluetooth    pairing and connecting through bluetoothctl
 internal/store        likes, playlists, saved items, history (one JSON file)
 web/                  the app
-scripts/              installer, YouTube updater, cross-compile script
+android/              the Android app (Java, built with Gradle)
+packaging/            AppImage and Windows zip extras
+scripts/              installers, YouTube updater, build and packaging scripts
 ```
