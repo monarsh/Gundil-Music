@@ -1,6 +1,6 @@
 // Keeps the app shell available so the installed app opens instantly.
 // API calls, audio and artwork always go to the network.
-const CACHE = 'gundil-shell-v1';
+const CACHE = 'gundil-shell-v2';
 const SHELL = ['./', 'style.css', 'app.js', 'icon.svg', 'icon-192.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {

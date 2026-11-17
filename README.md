@@ -1,45 +1,54 @@
 # Gundil Music
 
-A self-hosted music streaming app. One small program indexes your music
-folders and serves a streaming-style web app (home, search, albums, artists,
-playlists, likes, queue) to every device on your network. It can also play
-through the speakers of the machine it runs on, including a Bluetooth speaker
-it pairs itself, so a headless Raspberry Pi or Orange Pi becomes a music box
-you control from your phone.
+A YouTube Music style player you host yourself. One small server streams the
+YouTube Music catalogue to a web app on your phone, laptop or desktop, and it
+can play through its own speaker or a **Bluetooth speaker it pairs itself**.
+That turns a headless Raspberry Pi or Orange Pi into a music box you control
+from your phone.
 
-It plays **your own audio files** (MP3, FLAC, M4A, OGG, Opus, WAV and more).
-There is no online catalogue.
+What you get, laid out like YouTube Music:
+
+- **Home**: mood chips, Quick picks, Listen again, albums, mixes and artists
+- **Explore**: new releases, charts by country, moods & genres
+- **Search** with suggestions, a top result, and Songs / Videos / Albums / Artists / Playlists filters
+- **Album, artist and playlist pages** with Play, Shuffle, Mix and Save
+- **Player** with Up next (autoplay radio keeps the music going), synced Lyrics and Related
+- **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
+- **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
+
+Gundil Music is not affiliated with YouTube or Google. It uses YouTube Music's
+unofficial web API (through [ytmusicapi](https://github.com/sigma67/ytmusicapi))
+and [yt-dlp](https://github.com/yt-dlp/yt-dlp) for audio, without a Google
+account. Using YouTube this way may be against YouTube's Terms of Service; it's
+meant for personal use. Your likes, playlists and history are stored on your
+server, not in a YouTube account.
 
 ## Platforms
 
 | Where | How it runs | Bluetooth |
 |---|---|---|
-| Linux desktop | `gundil-music-linux-amd64`, open the web app | Pair and connect from the app (BlueZ) |
-| Headless Raspberry Pi | `linux-arm64` (64-bit OS), `linux-armv7`, `linux-armv6` (Pi 1/Zero) | Pair and connect from the app; the Pi plays to the speaker |
-| Headless Orange Pi PC | `linux-armv7` (Armbian) | Same as the Pi. Needs a USB Bluetooth dongle, the board has none |
-| Windows | `gundil-music-windows-amd64.exe`, open the web app | Pair in Windows settings; audio follows |
-| Android | Open the web app in Chrome and "Add to Home screen". Or run the server on the phone in Termux (`android-arm64`) | Pair in Android settings; lock-screen and headset buttons work |
+| Headless Raspberry Pi 3/4/5 | `linux-arm64` (64-bit OS) or `linux-armv7`, set up by `install.sh` | Pair and connect from the app; the Pi plays to the speaker |
+| Headless Orange Pi PC | `linux-armv7` (Armbian), set up by `install.sh`. Needs a USB Bluetooth dongle | Same as the Pi |
+| Linux desktop | `linux-amd64`, open the web app | Pair and connect from the app, or use the system settings |
+| Windows | `windows-amd64.exe`, open the web app | Pair in Windows settings; audio follows |
+| Android | Open the web app in Chrome and add it to the home screen | Pair in Android settings; lock-screen and headset buttons work |
 
-## Quick start
+Pi 1 and Pi Zero (ARMv6) are not supported for YouTube playback: no JavaScript
+runtime that yt-dlp accepts runs on them.
 
-Download a binary from Releases (or build one, below), then:
+## What the server needs
 
-```sh
-./gundil-music -music ~/Music
-```
+- **Python 3** with `ytmusicapi` and `yt-dlp`:
+  `pip install -U ytmusicapi "yt-dlp[default]"`
+- **A JavaScript runtime** for yt-dlp to unlock YouTube streams: [Deno](https://deno.com) 2.3+
+  (recommended) or Node.js 22+. Most Linux distributions package an older Node, so get it
+  from the project's site.
+- **[mpv](https://mpv.io)**, only if the server itself should play sound (headless boxes,
+  Bluetooth speakers).
+- **BlueZ** (`bluetoothctl`), only for pairing Bluetooth speakers from the app (Linux).
 
-Open the printed address (default `http://<this-machine>:8338`) on any device.
-
-| Flag | Environment | Default | Meaning |
-|---|---|---|---|
-| `-music` | `GUNDIL_MUSIC` | `~/Music` | Music folder(s). Separate several with `:` (`;` on Windows) |
-| `-addr` | `GUNDIL_ADDR` | `:8338` | Listen address |
-| `-data` | `GUNDIL_DATA` | user config dir | Where playlists, likes and the library cache live |
-| `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
-| `-mpv` | `GUNDIL_MPV` | found in `PATH` | Path to mpv |
-
-Without `-auth`, anyone on your network can play music and manage Bluetooth.
-Do not expose the port to the internet.
+`install.sh` sets all of this up on a Pi. Elsewhere, install them yourself.
+**About → YouTube Music** in the app (avatar menu) shows what the server found.
 
 ## Headless Raspberry Pi / Orange Pi
 
@@ -47,32 +56,55 @@ On Raspberry Pi OS or Armbian, as your normal user:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/monarsh/Gundil-Music/main/scripts/install.sh
-bash install.sh                      # downloads the latest release
-# or: bash install.sh ./gundil-music-linux-armv7 /mnt/usb/music
+bash install.sh                        # downloads the latest release
+# or: bash install.sh ./gundil-music-linux-armv7
 ```
 
-The script installs mpv, BlueZ and PipeWire, sets up a service that starts at
-boot without anyone logging in, and prints the address to open. Then, from
-your phone:
+It installs mpv, BlueZ, PipeWire, Python with ytmusicapi and yt-dlp, and Deno
+(or Node on 32-bit boards). Then it sets up a service that starts at boot
+without anyone logging in, and prints the address to open. From your phone:
 
-1. Open the app and tap the speaker button.
-2. Put your Bluetooth speaker in pairing mode and tap **Scan for devices**.
-3. Tap **Connect**. Playback switches to the board and comes out of the speaker.
+1. Open the app and tap the cast button at the top.
+2. Put your Bluetooth speaker in pairing mode and tap **Scan**.
+3. Tap **Connect**. Playback moves to the board and comes out of the speaker.
 
 The speaker is trusted, so it reconnects on its own after a reboot.
 
+YouTube changes often. If songs stop playing, update the libraries:
+`bash scripts/update-youtube.sh`.
+
+## Other machines
+
+```sh
+pip install -U ytmusicapi "yt-dlp[default]"
+./gundil-music
+```
+
+Open the printed address (default `http://<this-machine>:8338`).
+
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `-addr` | `GUNDIL_ADDR` | `:8338` | Listen address |
+| `-data` | `GUNDIL_DATA` | user config dir | Where your library (likes, playlists, history) lives |
+| `-python` | `GUNDIL_PYTHON` | `python3` in PATH | Python that has ytmusicapi and yt-dlp |
+| `-mpv` | `GUNDIL_MPV` | `mpv` in PATH | mpv for playing on the server |
+| `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
+| | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
+| | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
+
+Without `-auth`, anyone on your network can use the player and manage
+Bluetooth. Don't expose the port to the internet.
+
 ## Where the sound comes out
 
-The speaker button switches between two outputs:
+The cast button switches between:
 
-- **This device**: audio plays in the browser you are holding. Bluetooth is
-  whatever that phone or computer is connected to.
-- **The server**: audio plays from the machine running Gundil Music (needs
-  [mpv](https://mpv.io) installed there). The queue lives on the server, so it
-  keeps playing when you close the app, and every device sees the same player.
-
-On Windows, install mpv and put it in `PATH` (or pass `-mpv`) to use the
-second mode.
+- **This device**: audio plays in the browser you're holding, and Bluetooth is whatever
+  that phone or computer is connected to. Audio still flows through the server, which
+  fetches it from YouTube.
+- **The server**: audio plays from the machine running Gundil Music through mpv. The queue
+  lives on the server, so it keeps playing when you close the app, and every phone sees and
+  controls the same player.
 
 ## Build
 
@@ -83,18 +115,19 @@ go build -o gundil-music .      # this machine
 ./scripts/build-all.sh          # every platform, into dist/
 ```
 
-The web app in `web/` is plain HTML, CSS and JavaScript embedded into the
-binary. There is no front-end build step.
+The web app in `web/` is plain HTML, CSS and JavaScript, and the YouTube helper
+(`internal/yt/helper.py`) is a Python script. Both are embedded in the binary.
+There is no front-end build step.
 
 ## Layout
 
 ```
 main.go               flags and wiring
-internal/library      folder scan, tags, cover art
-internal/store        playlists, likes, play history (JSON file)
-internal/player       server-side playback through mpv
+internal/yt           Python helper (ytmusicapi + yt-dlp) and the Go client that runs it
+internal/server       HTTP API, audio stream proxy, live updates, static files
+internal/player       server-side playback through mpv, with autoplay
 internal/bluetooth    pairing and connecting through bluetoothctl
-internal/server       HTTP API, live updates, static files
+internal/store        likes, playlists, saved items, history (one JSON file)
 web/                  the app
-scripts/              installer and cross-compile script
+scripts/              installer, YouTube updater, cross-compile script
 ```

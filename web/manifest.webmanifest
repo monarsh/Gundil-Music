@@ -1,12 +1,12 @@
 {
   "name": "Gundil Music",
   "short_name": "Gundil",
-  "description": "Your music, on every device and speaker in the house.",
+  "description": "Music streaming you host yourself, with Bluetooth speaker support.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0e0d13",
-  "theme_color": "#0e0d13",
+  "background_color": "#030303",
+  "theme_color": "#030303",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },

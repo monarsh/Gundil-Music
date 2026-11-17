@@ -1,10 +1,13 @@
-// Gundil Music is a self-hosted music streaming app: one small server that
-// indexes your music folders, serves a web app to any device, and can play
-// through its own speakers or a Bluetooth speaker when it runs headless.
+// Gundil Music is a YouTube Music style player you host yourself: one small
+// server that streams the YouTube Music catalogue to a web app on every
+// device, and can play through its own speakers or a Bluetooth speaker when
+// it runs headless on a Raspberry Pi or Orange Pi.
 package main
 
 import (
+	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -14,15 +17,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/monarsh/gundil-music/internal/bluetooth"
-	"github.com/monarsh/gundil-music/internal/library"
+	"github.com/monarsh/gundil-music/internal/model"
 	"github.com/monarsh/gundil-music/internal/player"
 	"github.com/monarsh/gundil-music/internal/server"
 	"github.com/monarsh/gundil-music/internal/store"
+	"github.com/monarsh/gundil-music/internal/yt"
 )
 
 //go:embed web
@@ -44,12 +47,12 @@ func main() {
 		configDir = home
 	}
 
-	music := flag.String("music", env("GUNDIL_MUSIC", filepath.Join(home, "Music")),
-		"music folder(s), separated by "+string(os.PathListSeparator))
 	addr := flag.String("addr", env("GUNDIL_ADDR", ":8338"), "address to listen on")
 	dataDir := flag.String("data", env("GUNDIL_DATA", filepath.Join(configDir, "gundil-music")),
-		"folder for playlists and the library cache")
+		"folder for your library (likes, playlists, history)")
 	auth := flag.String("auth", env("GUNDIL_AUTH", ""), "require a login, as user:password")
+	python := flag.String("python", env("GUNDIL_PYTHON", ""), "Python 3 with ytmusicapi and yt-dlp (default: python3 in PATH)")
+	helper := flag.String("helper", env("GUNDIL_HELPER", ""), "use this helper script instead of the built-in one")
 	mpvPath := flag.String("mpv", env("GUNDIL_MPV", ""), "path to mpv (default: look in PATH)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -62,45 +65,67 @@ func main() {
 		log.Fatalf("cannot create data folder: %v", err)
 	}
 
-	var roots []string
-	for _, r := range filepath.SplitList(*music) {
-		if r = strings.TrimSpace(r); r != "" {
-			roots = append(roots, r)
-		}
+	ytc, err := yt.New(*python, *helper, *dataDir)
+	if err != nil {
+		log.Fatalf("cannot set up the YouTube helper: %v", err)
 	}
-
-	lib := library.New(roots, filepath.Join(*dataDir, "library.json"))
-	st := store.New(filepath.Join(*dataDir, "state.json"))
+	st := store.New(filepath.Join(*dataDir, "library.json"))
 	pl := player.New(*mpvPath)
 	bt := bluetooth.New()
-
-	web, _ := fs.Sub(webFiles, "web")
-	srv := &server.Server{Lib: lib, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth}
-
-	pl.Resolve = lib.Path
-	pl.OnChange = srv.BroadcastPlayer
-	pl.OnPlay = st.RecordPlay
-	pl.OnDuration = lib.SetDuration
-	lib.OnChange = func() { srv.Broadcast("library", map[string]int{"tracks": lib.Count()}) }
-
-	handler := srv.Handler()
-	go lib.Scan()
-	go func() {
-		for range time.Tick(time.Minute) {
-			lib.Flush()
-		}
-	}()
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("cannot listen on %s: %v", *addr, err)
 	}
+	tcp := ln.Addr().(*net.TCPAddr)
+
+	web, _ := fs.Sub(webFiles, "web")
+	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port}
+
+	pl.Resolve = srv.StreamURL
+	pl.OnChange = srv.BroadcastPlayer
+	pl.OnPlay = st.AddHistory
+	pl.Prefetch = func(id string) { ytc.Stream(context.Background(), id, false) }
+	pl.More = func(last model.Track) []model.Track {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		data, err := ytc.Call(ctx, "watch", map[string]string{"videoId": last.VideoID, "radio": "1"})
+		if err != nil {
+			log.Printf("autoplay: %v", err)
+			return nil
+		}
+		var w struct {
+			Tracks []model.Track `json:"tracks"`
+		}
+		json.Unmarshal(data, &w)
+		out := w.Tracks[:0]
+		for _, t := range w.Tracks {
+			if !st.Disliked(t.VideoID) {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+
+	handler := srv.Handler()
+
 	log.Printf("Gundil Music %s", version)
-	log.Printf("music folders: %s", strings.Join(roots, ", "))
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		status := ytc.Status(ctx)
+		if e, ok := status["error"]; ok {
+			log.Printf("YouTube Music is not ready: %v", e)
+		} else if w, ok := status["warning"]; ok {
+			log.Printf("warning: %v", w)
+		} else {
+			log.Printf("YouTube Music ready (ytmusicapi %v, yt-dlp %v, js %v)", status["ytmusicapi"], status["yt_dlp"], status["js"])
+		}
+	}()
 	if !pl.Available() {
 		log.Printf("mpv not found: playing through this machine's speakers is disabled (browser playback still works)")
 	}
-	for _, u := range urls(ln.Addr().(*net.TCPAddr)) {
+	for _, u := range urls(tcp) {
 		log.Printf("open %s", u)
 	}
 
@@ -109,7 +134,7 @@ func main() {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 		pl.Close()
-		lib.Flush()
+		ytc.Close()
 		os.Exit(0)
 	}()
 

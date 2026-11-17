@@ -2,13 +2,17 @@
 package server
 
 import (
-	"bytes"
-	"compress/gzip"
+	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -16,22 +20,65 @@ import (
 	"time"
 
 	"github.com/monarsh/gundil-music/internal/bluetooth"
-	"github.com/monarsh/gundil-music/internal/library"
+	"github.com/monarsh/gundil-music/internal/model"
 	"github.com/monarsh/gundil-music/internal/player"
 	"github.com/monarsh/gundil-music/internal/store"
+	"github.com/monarsh/gundil-music/internal/yt"
 )
 
 type Server struct {
-	Lib     *library.Library
+	YT      *yt.Client
 	Store   *store.Store
 	Player  *player.Player
 	BT      *bluetooth.Manager
 	Web     fs.FS
 	Version string
 	Auth    string // "user:password", empty for no auth
+	Port    int
 
-	mu      sync.Mutex
-	clients map[chan string]struct{}
+	token string // lets mpv on this machine fetch streams when auth is on
+
+	mu       sync.Mutex
+	clients  map[chan string]struct{}
+	sentQVer int
+}
+
+// endpoint describes a YouTube Music method the app may call.
+type endpoint struct {
+	args []string
+	ttl  time.Duration
+}
+
+var endpoints = map[string]endpoint{
+	"home":     {nil, 20 * time.Minute},
+	"explore":  {nil, 30 * time.Minute},
+	"charts":   {[]string{"country"}, 30 * time.Minute},
+	"moods":    {nil, 6 * time.Hour},
+	"mood":     {[]string{"params"}, 30 * time.Minute},
+	"search":   {[]string{"q", "filter"}, 10 * time.Minute},
+	"suggest":  {[]string{"q"}, 10 * time.Minute},
+	"album":    {[]string{"id"}, time.Hour},
+	"artist":   {[]string{"id"}, time.Hour},
+	"playlist": {[]string{"id"}, 30 * time.Minute},
+	"watch":    {[]string{"videoId", "playlistId", "radio", "shuffle"}, 10 * time.Minute},
+	"lyrics":   {[]string{"id"}, 24 * time.Hour},
+	"related":  {[]string{"id"}, time.Hour},
+}
+
+var streamClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+	TLSHandshakeTimeout:   15 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+	MaxIdleConnsPerHost:   8,
+}}
+
+// StreamURL is what the server's own player opens for a video.
+func (s *Server) StreamURL(id string) (string, bool) {
+	if !model.ValidID(id) {
+		return "", false
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/api/stream/%s?k=%s", s.Port, id, s.token), true
 }
 
 // Broadcast sends a server-sent event to every connected client.
@@ -48,7 +95,17 @@ func (s *Server) Broadcast(event string, v any) {
 	s.mu.Unlock()
 }
 
-func (s *Server) BroadcastPlayer() { s.Broadcast("player", s.Player.State()) }
+// BroadcastPlayer sends the player state, with the queue only when it changed.
+func (s *Server) BroadcastPlayer() {
+	st := s.Player.State()
+	s.mu.Lock()
+	if st.QueueVersion == s.sentQVer {
+		st.Queue = nil
+	}
+	s.sentQVer = st.QueueVersion
+	s.mu.Unlock()
+	s.Broadcast("player", st)
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -67,74 +124,132 @@ func readBody(r *http.Request, v any) error {
 
 func (s *Server) Handler() http.Handler {
 	s.clients = map[chan string]struct{}{}
+	b := make([]byte, 16)
+	rand.Read(b)
+	s.token = hex.EncodeToString(b)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/info", s.info)
-	mux.HandleFunc("GET /api/library", s.library)
-	mux.HandleFunc("POST /api/library/rescan", func(w http.ResponseWriter, r *http.Request) {
-		go s.Lib.Scan()
-		writeJSON(w, map[string]bool{"scanning": true})
-	})
+	mux.HandleFunc("GET /api/yt/{method}", s.ytCall)
 	mux.HandleFunc("GET /api/stream/{id}", s.stream)
-	mux.HandleFunc("GET /api/art/{id}", s.art)
-	mux.HandleFunc("POST /api/tracks/{id}/duration", func(w http.ResponseWriter, r *http.Request) {
-		var b struct{ Duration float64 }
-		if readBody(r, &b) == nil {
-			s.Lib.SetDuration(r.PathValue("id"), b.Duration)
+	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if id := r.PathValue("id"); model.ValidID(id) {
+			go s.YT.Stream(context.Background(), id, false)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("GET /api/state", s.state)
-	mux.HandleFunc("POST /api/played/{id}", func(w http.ResponseWriter, r *http.Request) {
-		s.Store.RecordPlay(r.PathValue("id"))
-		s.state(w, r)
-	})
-	mux.HandleFunc("POST /api/liked/{id}", func(w http.ResponseWriter, r *http.Request) {
-		var b struct{ Liked bool }
+	mux.HandleFunc("POST /api/rating", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Track  model.Track `json:"track"`
+			Rating string      `json:"rating"`
+		}
 		if err := readBody(r, &b); err != nil {
 			fail(w, 400, err)
 			return
 		}
-		s.Store.SetLiked(r.PathValue("id"), b.Liked)
-		s.state(w, r)
+		if err := s.Store.SetRating(b.Track, b.Rating); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		s.changedState(w)
+	})
+	mux.HandleFunc("POST /api/history", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Track model.Track `json:"track"`
+		}
+		if readBody(r, &b) == nil {
+			s.Store.AddHistory(b.Track)
+		}
+		s.changedState(w)
+	})
+	mux.HandleFunc("DELETE /api/history", func(w http.ResponseWriter, r *http.Request) {
+		s.Store.ClearHistory()
+		s.changedState(w)
+	})
+	mux.HandleFunc("POST /api/searches", func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Q string }
+		if readBody(r, &b) == nil {
+			s.Store.AddSearch(b.Q)
+		}
+		s.changedState(w)
+	})
+	mux.HandleFunc("DELETE /api/searches", func(w http.ResponseWriter, r *http.Request) {
+		s.Store.RemoveSearch(r.URL.Query().Get("q"))
+		s.changedState(w)
+	})
+	mux.HandleFunc("POST /api/saved", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Item  store.Saved `json:"item"`
+			Saved bool        `json:"saved"`
+		}
+		if err := readBody(r, &b); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		if err := s.Store.SetSaved(b.Item, b.Saved); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		s.changedState(w)
 	})
 	mux.HandleFunc("POST /api/playlists", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
-			Name   string
-			Tracks []string
+			Name        string        `json:"name"`
+			Description string        `json:"description"`
+			Tracks      []model.Track `json:"tracks"`
 		}
 		if err := readBody(r, &b); err != nil {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.Store.CreatePlaylist(b.Name, b.Tracks); err != nil {
+		p, err := s.Store.CreatePlaylist(b.Name, b.Description, b.Tracks)
+		if err != nil {
 			fail(w, 400, err)
 			return
 		}
-		s.state(w, r)
+		s.Broadcast("state", nil)
+		writeJSON(w, map[string]any{"id": p.ID, "state": json.RawMessage(s.Store.JSON())})
 	})
 	mux.HandleFunc("PUT /api/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
-			Name   *string
-			Tracks *[]string
+			Name        *string        `json:"name"`
+			Description *string        `json:"description"`
+			Tracks      *[]model.Track `json:"tracks"`
 		}
 		if err := readBody(r, &b); err != nil {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.Store.UpdatePlaylist(r.PathValue("id"), b.Name, b.Tracks); err != nil {
+		if err := s.Store.UpdatePlaylist(r.PathValue("id"), b.Name, b.Description, b.Tracks); err != nil {
 			fail(w, 404, err)
 			return
 		}
-		s.state(w, r)
+		s.changedState(w)
+	})
+	mux.HandleFunc("POST /api/playlists/{id}/add", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Tracks []model.Track `json:"tracks"`
+		}
+		if err := readBody(r, &b); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		n, err := s.Store.AddToPlaylist(r.PathValue("id"), b.Tracks)
+		if err != nil {
+			fail(w, 404, err)
+			return
+		}
+		s.Broadcast("state", nil)
+		writeJSON(w, map[string]any{"added": n, "state": json.RawMessage(s.Store.JSON())})
 	})
 	mux.HandleFunc("DELETE /api/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DeletePlaylist(r.PathValue("id")); err != nil {
 			fail(w, 404, err)
 			return
 		}
-		s.state(w, r)
+		s.changedState(w)
 	})
 
 	mux.HandleFunc("GET /api/player", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.Player.State()) })
@@ -164,6 +279,11 @@ func (s *Server) Handler() http.Handler {
 	}
 	user, pass, _ := strings.Cut(s.Auth, ":")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/stream/") &&
+			subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("k")), []byte(s.token)) == 1 {
+			mux.ServeHTTP(w, r)
+			return
+		}
 		u, p, ok := r.BasicAuth()
 		if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 ||
 			subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
@@ -177,50 +297,123 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
 	writeJSON(w, map[string]any{
 		"name":      "Gundil Music",
 		"version":   s.Version,
 		"hostname":  host,
 		"player":    s.Player.Available(),
 		"bluetooth": s.BT.Available(),
-		"folders":   s.Lib.Roots(),
+		"youtube":   s.YT.Status(ctx),
 	})
 }
 
-func (s *Server) library(w http.ResponseWriter, r *http.Request) {
-	data, _ := json.Marshal(map[string]any{"tracks": s.Lib.Tracks(), "scanning": s.Lib.Scanning()})
-	w.Header().Set("Content-Type", "application/json")
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-		w.Header().Set("Content-Encoding", "gzip")
-		gz := gzip.NewWriter(w)
-		gz.Write(data)
-		gz.Close()
+func (s *Server) ytCall(w http.ResponseWriter, r *http.Request) {
+	method := r.PathValue("method")
+	ep, ok := endpoints[method]
+	if !ok {
+		fail(w, 404, errors.New("unknown method"))
 		return
 	}
+	args := map[string]string{}
+	q := r.URL.Query()
+	for _, a := range ep.args {
+		if v := strings.TrimSpace(q.Get(a)); v != "" {
+			if len(v) > 500 {
+				fail(w, 400, errors.New(a+" is too long"))
+				return
+			}
+			args[a] = v
+		}
+	}
+	ttl := ep.ttl
+	if method == "watch" && args["radio"] != "" {
+		ttl = 0 // a radio is different every time
+	}
+	data, err := s.YT.Cached(r.Context(), method, args, ttl)
+	if err != nil {
+		if r.Context().Err() == nil {
+			fail(w, 502, err)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
 }
 
+// stream proxies a video's audio from YouTube, passing Range through so the
+// browser and mpv can seek.
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
-	path, ok := s.Lib.Path(r.PathValue("id"))
-	if !ok {
+	id := r.PathValue("id")
+	if !model.ValidID(id) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, path) // handles Range requests for seeking
-}
+	clientRange := r.Header.Get("Range")
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		st, err := s.YT.Stream(r.Context(), id, attempt > 0)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		for k, v := range st.Headers {
+			req.Header.Set(k, v)
+		}
+		if clientRange != "" {
+			req.Header.Set("Range", clientRange)
+		} else {
+			req.Header.Set("Range", "bytes=0-")
+		}
+		resp, err := streamClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
+			continue
+		}
+		defer resp.Body.Close()
 
-func (s *Server) art(w http.ResponseWriter, r *http.Request) {
-	data, mime, ok := s.Lib.Art(r.PathValue("id"))
-	if !ok {
-		http.NotFound(w, r)
+		h := w.Header()
+		mime := st.Mime
+		if mime == "" {
+			mime = resp.Header.Get("Content-Type")
+		}
+		h.Set("Content-Type", mime)
+		h.Set("Accept-Ranges", "bytes")
+		h.Set("Cache-Control", "no-store")
+		status := resp.StatusCode
+		if status == http.StatusPartialContent && clientRange == "" {
+			// We asked for the whole file as a range; answer as a plain 200.
+			status = http.StatusOK
+			if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && total != "*" {
+				h.Set("Content-Length", total)
+			}
+		} else {
+			if v := resp.Header.Get("Content-Range"); v != "" {
+				h.Set("Content-Range", v)
+			}
+			if v := resp.Header.Get("Content-Length"); v != "" {
+				h.Set("Content-Length", v)
+			}
+		}
+		w.WriteHeader(status)
+		io.Copy(w, resp.Body)
 		return
 	}
-	if mime == "" || !strings.HasPrefix(mime, "image/") {
-		mime = http.DetectContentType(data)
+	if r.Context().Err() == nil {
+		log.Printf("stream %s: %v", id, lastErr)
+		fail(w, 502, lastErr)
 	}
-	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }
 
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
@@ -228,15 +421,25 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.Store.JSON())
 }
 
+// changedState tells other devices the library changed and returns it.
+func (s *Server) changedState(w http.ResponseWriter) {
+	s.Broadcast("state", nil)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(s.Store.JSON())
+}
+
 func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		IDs      []string `json:"ids"`
-		Index    int      `json:"index"`
-		Play     bool     `json:"play"`
-		Position float64  `json:"position"`
-		Volume   float64  `json:"volume"`
-		Mode     string   `json:"mode"`
-		Name     string   `json:"name"`
+		Tracks   []model.Track `json:"tracks"`
+		Index    int           `json:"index"`
+		Play     bool          `json:"play"`
+		Next     bool          `json:"next"`
+		Source   string        `json:"source"`
+		Position float64       `json:"position"`
+		Volume   float64       `json:"volume"`
+		Mode     string        `json:"mode"`
+		Name     string        `json:"name"`
+		On       bool          `json:"on"`
 	}
 	if r.ContentLength != 0 {
 		if err := readBody(r, &b); err != nil {
@@ -248,7 +451,11 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.PathValue("action") {
 	case "queue":
-		err = p.SetQueue(b.IDs, b.Index, b.Play)
+		err = p.SetQueue(b.Tracks, b.Index, b.Play, b.Source)
+	case "insert":
+		p.Insert(b.Tracks, b.Next)
+	case "remove":
+		err = p.Remove(b.Index)
 	case "jump":
 		err = p.Jump(b.Index)
 	case "pause":
@@ -269,6 +476,8 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 		err = p.SetVolume(b.Volume)
 	case "repeat":
 		err = p.SetRepeat(b.Mode)
+	case "autoplay":
+		p.SetAutoplay(b.On)
 	case "device":
 		err = p.SetAudioDevice(b.Name)
 	default:
@@ -320,7 +529,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := make(chan string, 32)
+	ch := make(chan string, 64)
 	s.mu.Lock()
 	s.clients[ch] = struct{}{}
 	s.mu.Unlock()
@@ -330,7 +539,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	data, _ := json.Marshal(s.Player.State())
+	data, _ := json.Marshal(s.Player.State()) // full state, queue included
 	fmt.Fprintf(w, "event: player\ndata: %s\n\n", data)
 	flusher.Flush()
 

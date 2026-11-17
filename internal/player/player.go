@@ -12,20 +12,26 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/monarsh/gundil-music/internal/model"
 )
 
 // State is the player state sent to clients.
 type State struct {
-	Available bool     `json:"available"` // mpv was found
-	Queue     []string `json:"queue"`
-	Index     int      `json:"index"`
-	Playing   bool     `json:"playing"` // a track is loaded
-	Paused    bool     `json:"paused"`
-	Position  float64  `json:"position"`
-	Duration  float64  `json:"duration"`
-	Volume    float64  `json:"volume"`
-	Repeat    string   `json:"repeat"` // off | all | one
-	Error     string   `json:"error,omitempty"`
+	Available    bool          `json:"available"` // mpv was found
+	Queue        []model.Track `json:"queue,omitempty"`
+	QueueVersion int           `json:"queueVersion"`
+	Source       string        `json:"source"` // "Playing from ..."
+	Index        int           `json:"index"`
+	Playing      bool          `json:"playing"` // a track is loaded
+	Paused       bool          `json:"paused"`
+	Position     float64       `json:"position"`
+	Duration     float64       `json:"duration"`
+	Volume       float64       `json:"volume"`
+	Repeat       string        `json:"repeat"` // off | all | one
+	Autoplay     bool          `json:"autoplay"`
+	Loading      bool          `json:"loading"`
+	Error        string        `json:"error,omitempty"`
 }
 
 // AudioDevice is an output mpv can play to.
@@ -41,23 +47,27 @@ type response struct {
 
 type Player struct {
 	mpvPath string
-	// Resolve maps a track ID to something mpv can open.
-	Resolve    func(id string) (string, bool)
-	OnChange   func()
-	OnPlay     func(id string)
-	OnDuration func(id string, seconds float64)
+	// Resolve maps a video ID to a URL mpv can open.
+	Resolve  func(id string) (string, bool)
+	OnChange func()
+	OnPlay   func(t model.Track)
+	// More returns tracks to continue with after last (autoplay radio).
+	More func(last model.Track) []model.Track
+	// Prefetch warms up the stream for a video that will play soon.
+	Prefetch func(id string)
 
 	opMu sync.Mutex // serialises user-facing operations
 
-	mu       sync.Mutex // guards everything below
-	st       State
-	conn     io.ReadWriteCloser
-	cmd      *exec.Cmd
-	pending  map[int]chan response
-	nextReq  int
-	lastSec  int
-	failures int
-	device   string
+	mu        sync.Mutex // guards everything below
+	st        State
+	conn      io.ReadWriteCloser
+	cmd       *exec.Cmd
+	pending   map[int]chan response
+	nextReq   int
+	lastSec   int
+	failures  int
+	device    string
+	extending bool
 }
 
 // New returns a player. mpvPath may be empty to look mpv up in PATH.
@@ -68,7 +78,7 @@ func New(mpvPath string) *Player {
 	return &Player{
 		mpvPath: mpvPath,
 		pending: map[int]chan response{},
-		st:      State{Available: mpvPath != "", Queue: []string{}, Volume: 80, Repeat: "off", Index: -1},
+		st:      State{Available: mpvPath != "", Queue: []model.Track{}, Volume: 80, Repeat: "off", Index: -1, Autoplay: true},
 	}
 }
 
@@ -78,7 +88,7 @@ func (p *Player) State() State {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st := p.st
-	st.Queue = append([]string{}, p.st.Queue...)
+	st.Queue = append([]model.Track{}, p.st.Queue...)
 	return st
 }
 
@@ -226,7 +236,6 @@ func (p *Player) propertyChanged(name string, data json.RawMessage) {
 	var num float64
 	var flag bool
 	notify := true
-	var durID string
 	p.mu.Lock()
 	switch name {
 	case "time-pos":
@@ -244,8 +253,8 @@ func (p *Player) propertyChanged(name string, data json.RawMessage) {
 	case "duration":
 		if json.Unmarshal(data, &num) == nil {
 			p.st.Duration = num
-			if p.st.Index >= 0 && p.st.Index < len(p.st.Queue) {
-				durID = p.st.Queue[p.st.Index]
+			if num > 0 {
+				p.st.Loading = false
 			}
 		}
 	case "pause":
@@ -258,9 +267,6 @@ func (p *Player) propertyChanged(name string, data json.RawMessage) {
 		}
 	}
 	p.mu.Unlock()
-	if durID != "" && num > 0 && p.OnDuration != nil {
-		p.OnDuration(durID, num)
-	}
 	if notify {
 		p.changed()
 	}
@@ -273,10 +279,15 @@ func (p *Player) loadCurrent() error {
 		p.mu.Unlock()
 		return errors.New("nothing to play")
 	}
-	id := p.st.Queue[p.st.Index]
+	tr := p.st.Queue[p.st.Index]
+	var next string
+	if p.st.Index+1 < len(p.st.Queue) {
+		next = p.st.Queue[p.st.Index+1].VideoID
+	}
+	nearEnd := p.st.Autoplay && p.st.Index >= len(p.st.Queue)-2
 	p.mu.Unlock()
 
-	src, ok := p.Resolve(id)
+	src, ok := p.Resolve(tr.VideoID)
 	if !ok {
 		return errors.New("track not found")
 	}
@@ -290,15 +301,58 @@ func (p *Player) loadCurrent() error {
 	}
 	p.command("set_property", "pause", false)
 	p.mu.Lock()
-	p.st.Playing, p.st.Paused = true, false
-	p.st.Position, p.st.Duration, p.st.Error = 0, 0, ""
+	p.st.Playing, p.st.Paused, p.st.Loading = true, false, true
+	p.st.Position, p.st.Duration, p.st.Error = 0, tr.Duration, ""
 	p.lastSec = -1
 	p.mu.Unlock()
 	if p.OnPlay != nil {
-		p.OnPlay(id)
+		p.OnPlay(tr)
+	}
+	if next != "" && p.Prefetch != nil {
+		go p.Prefetch(next)
+	}
+	if nearEnd {
+		go p.extend()
 	}
 	p.changed()
 	return nil
+}
+
+// extend appends autoplay tracks after the last one in the queue.
+func (p *Player) extend() bool {
+	p.mu.Lock()
+	if p.extending || p.More == nil || len(p.st.Queue) == 0 {
+		p.mu.Unlock()
+		return false
+	}
+	p.extending = true
+	last := p.st.Queue[len(p.st.Queue)-1]
+	p.mu.Unlock()
+
+	more := p.More(last)
+
+	p.mu.Lock()
+	p.extending = false
+	have := map[string]bool{}
+	for _, t := range p.st.Queue {
+		have[t.VideoID] = true
+	}
+	added := 0
+	for _, t := range more {
+		if t.Valid() && !have[t.VideoID] {
+			have[t.VideoID] = true
+			p.st.Queue = append(p.st.Queue, t)
+			added++
+		}
+	}
+	if added > 0 {
+		p.st.QueueVersion++
+	}
+	p.mu.Unlock()
+	if added > 0 {
+		p.changed()
+	}
+	return added > 0
 }
 
 func (p *Player) setError(err error) {
@@ -329,6 +383,14 @@ func (p *Player) advance(auto, failed bool) {
 	case next >= n && (p.st.Repeat == "all" || !auto):
 		next = 0
 	}
+	if !giveUp && next >= n && p.st.Autoplay && p.st.Repeat == "off" {
+		p.mu.Unlock()
+		grew := p.extend()
+		p.mu.Lock()
+		if grew {
+			n = len(p.st.Queue)
+		}
+	}
 	if giveUp || next >= n {
 		p.st.Playing, p.st.Position = false, 0
 		p.failures = 0
@@ -343,28 +405,87 @@ func (p *Player) advance(auto, failed bool) {
 
 // SetQueue replaces the queue. With play=false the current track keeps
 // playing if it is still the one at index (used for reorder and shuffle).
-func (p *Player) SetQueue(ids []string, index int, play bool) error {
+func (p *Player) SetQueue(tracks []model.Track, index int, play bool, source string) error {
 	p.opMu.Lock()
 	defer p.opMu.Unlock()
-	if ids == nil {
-		ids = []string{}
+	clean := make([]model.Track, 0, len(tracks))
+	for i, t := range tracks {
+		if t.Valid() {
+			clean = append(clean, t)
+		} else if i < index {
+			index--
+		}
 	}
-	if index < 0 || index >= len(ids) {
+	if index < 0 || index >= len(clean) {
 		index = 0
 	}
 	p.mu.Lock()
-	p.st.Queue = ids
+	p.st.Queue = clean
 	p.st.Index = index
-	if len(ids) == 0 {
+	p.st.Source = source
+	p.st.QueueVersion++
+	if len(clean) == 0 {
 		p.st.Index = -1
 	}
 	p.failures = 0
 	p.mu.Unlock()
-	if play && len(ids) > 0 {
+	if play && len(clean) > 0 {
 		return p.loadCurrent()
 	}
 	p.changed()
 	return nil
+}
+
+// Insert adds tracks after the current one (next) or at the end.
+func (p *Player) Insert(tracks []model.Track, next bool) {
+	p.mu.Lock()
+	add := make([]model.Track, 0, len(tracks))
+	for _, t := range tracks {
+		if t.Valid() {
+			add = append(add, t)
+		}
+	}
+	at := len(p.st.Queue)
+	if next && p.st.Index >= 0 {
+		at = p.st.Index + 1
+	}
+	q := append([]model.Track{}, p.st.Queue[:at]...)
+	q = append(q, add...)
+	p.st.Queue = append(q, p.st.Queue[at:]...)
+	if p.st.Index < 0 && len(p.st.Queue) > 0 {
+		p.st.Index = 0
+	}
+	p.st.QueueVersion++
+	p.mu.Unlock()
+	p.changed()
+}
+
+// Remove drops a track from the queue (not the one playing).
+func (p *Player) Remove(index int) error {
+	p.mu.Lock()
+	if index < 0 || index >= len(p.st.Queue) || index == p.st.Index {
+		p.mu.Unlock()
+		return errors.New("cannot remove that track")
+	}
+	p.st.Queue = append(p.st.Queue[:index:index], p.st.Queue[index+1:]...)
+	if index < p.st.Index {
+		p.st.Index--
+	}
+	p.st.QueueVersion++
+	p.mu.Unlock()
+	p.changed()
+	return nil
+}
+
+func (p *Player) SetAutoplay(on bool) {
+	p.mu.Lock()
+	p.st.Autoplay = on
+	nearEnd := on && p.st.Playing && p.st.Index >= len(p.st.Queue)-2
+	p.mu.Unlock()
+	if nearEnd {
+		go p.extend()
+	}
+	p.changed()
 }
 
 func (p *Player) Jump(index int) error {

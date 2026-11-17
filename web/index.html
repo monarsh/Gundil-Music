@@ -3,104 +3,125 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0e0d13">
+<meta name="theme-color" content="#030303">
 <title>Gundil Music</title>
 <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
-  <aside id="sidebar">
-    <a class="brand" href="#/"><img src="icon.svg" alt="" width="28" height="28"><span>Gundil Music</span></a>
-    <nav id="nav"></nav>
-    <div class="side-head">
-      <span>Playlists</span>
-      <button class="icon-btn" data-act="new-playlist" aria-label="New playlist" title="New playlist"></button>
+  <header id="topbar">
+    <div class="tb-left">
+      <button id="guide-btn" class="icon-btn" data-act="guide" aria-label="Guide"></button>
+      <a class="logo" href="#/" aria-label="Gundil Music home"><img src="icon.svg" alt="" width="30" height="30"><span>Gundil Music</span></a>
     </div>
-    <div id="side-playlists"></div>
-  </aside>
+    <div class="tb-center">
+      <form id="search-form" role="search" autocomplete="off">
+        <button type="button" class="icon-btn search-back" data-act="search-close" aria-label="Back"></button>
+        <span class="search-ico"></span>
+        <input id="search" type="search" placeholder="Search songs, albums, artists, playlists" aria-label="Search" enterkeyhint="search">
+        <button type="button" class="icon-btn search-clear" data-act="search-clear" aria-label="Clear search" hidden></button>
+      </form>
+      <div id="suggest" hidden></div>
+    </div>
+    <div class="tb-right">
+      <button class="icon-btn mobile-only" data-act="search-open" aria-label="Search" id="m-search"></button>
+      <button class="icon-btn cast-btn" data-act="cast" aria-label="Speakers and Bluetooth" title="Play on a speaker"></button>
+      <button class="avatar" data-act="avatar-menu" aria-label="Account menu">G</button>
+    </div>
+  </header>
 
-  <div id="content">
-    <header id="topbar">
-      <a class="brand brand-mobile" href="#/"><img src="icon.svg" alt="Gundil Music" width="28" height="28"></a>
-      <label class="search">
-        <span class="search-icon"></span>
-        <input id="search" type="search" placeholder="Search songs, albums, artists" autocomplete="off" aria-label="Search">
-      </label>
-      <button id="output-btn" class="pill-btn" data-act="devices" title="Speakers and Bluetooth">
-        <span class="ico"></span><span id="output-label">This device</span>
-      </button>
-    </header>
-    <main id="view" tabindex="-1"></main>
-  </div>
+  <nav id="guide" aria-label="Main"></nav>
 
-  <footer id="player" class="empty">
-    <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-    <div class="p-track" data-act="open-now">
-      <div id="p-art" class="art"></div>
-      <div class="p-text">
-        <div id="p-title" class="p-title">Nothing playing</div>
-        <div id="p-sub" class="p-sub">Pick a song to start</div>
+  <main id="main" tabindex="-1"><div id="view"></div></main>
+
+  <section id="pp" aria-label="Now playing" hidden>
+    <div class="pp-top">
+      <button class="icon-btn" data-act="pp-close" aria-label="Close player" id="pp-close"></button>
+      <div class="pp-where" id="pp-where"></div>
+      <button class="icon-btn cast-btn" data-act="cast" aria-label="Speakers and Bluetooth"></button>
+    </div>
+    <div class="pp-main">
+      <div class="pp-art" id="pp-art"></div>
+      <div class="pp-info">
+        <div class="pp-titles">
+          <div class="pp-title" id="pp-title"></div>
+          <div class="pp-sub" id="pp-sub"></div>
+        </div>
+        <div class="pp-actions">
+          <div class="pill-group">
+            <button class="pill-part" data-act="like-current" id="pp-like" aria-label="Like"></button>
+            <button class="pill-part" data-act="dislike-current" id="pp-dislike" aria-label="Dislike"></button>
+          </div>
+          <button class="pill" data-act="save-current"><span class="ico-playlist-add"></span>Save</button>
+          <button class="pill" data-act="share-current"><span class="ico-share"></span>Share</button>
+        </div>
+        <input id="pp-seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+        <div class="pp-times"><span id="pp-pos">0:00</span><span id="pp-dur">0:00</span></div>
+        <div class="pp-controls">
+          <button class="icon-btn" data-act="shuffle" id="pp-shuffle" aria-label="Shuffle"></button>
+          <button class="icon-btn big" data-act="prev" id="pp-prev" aria-label="Previous"></button>
+          <button class="play-circle" data-act="toggle" id="pp-play" aria-label="Play"></button>
+          <button class="icon-btn big" data-act="next" id="pp-next" aria-label="Next"></button>
+          <button class="icon-btn" data-act="repeat" id="pp-repeat" aria-label="Repeat"></button>
+        </div>
       </div>
-      <button id="p-like" class="icon-btn like desktop-only" data-act="like-current" aria-label="Like"></button>
     </div>
-    <div class="p-controls">
-      <button id="p-shuffle" class="icon-btn desktop-only" data-act="shuffle" aria-label="Shuffle" title="Shuffle"></button>
-      <button class="icon-btn desktop-only" data-act="prev" aria-label="Previous" id="p-prev"></button>
-      <button id="p-play" class="icon-btn play-btn" data-act="toggle" aria-label="Play"></button>
-      <button class="icon-btn" data-act="next" aria-label="Next" id="p-next"></button>
-      <button id="p-repeat" class="icon-btn desktop-only" data-act="repeat" aria-label="Repeat" title="Repeat"></button>
+    <div class="pp-side" id="pp-side">
+      <div class="pp-tabs" role="tablist">
+        <button role="tab" data-act="pp-tab" data-tab="upnext">Up next</button>
+        <button role="tab" data-act="pp-tab" data-tab="lyrics">Lyrics</button>
+        <button role="tab" data-act="pp-tab" data-tab="related">Related</button>
+      </div>
+      <div class="pp-body" id="pp-body"></div>
     </div>
-    <div class="p-right desktop-only">
-      <span id="p-time" class="p-time"></span>
-      <span class="vol-ico"></span>
-      <input id="volume" type="range" min="0" max="100" value="80" aria-label="Volume">
-      <button class="icon-btn" data-act="open-now" aria-label="Queue" title="Queue" id="p-queue"></button>
+  </section>
+
+  <footer id="bar" class="empty">
+    <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+    <div class="bar-left">
+      <button class="icon-btn" data-act="prev" id="b-prev" aria-label="Previous"></button>
+      <button class="icon-btn play-btn" data-act="toggle" id="b-play" aria-label="Play"></button>
+      <button class="icon-btn" data-act="next" id="b-next" aria-label="Next"></button>
+      <span class="b-time" id="b-time"></span>
     </div>
+    <div class="bar-mid" data-act="pp-open">
+      <div class="b-thumb" id="b-thumb"></div>
+      <div class="b-text">
+        <div class="b-title" id="b-title"></div>
+        <div class="b-sub" id="b-sub"></div>
+      </div>
+      <div class="b-rate">
+        <button class="icon-btn" data-act="dislike-current" id="b-dislike" aria-label="Dislike"></button>
+        <button class="icon-btn" data-act="like-current" id="b-like" aria-label="Like"></button>
+        <button class="icon-btn" data-act="current-menu" id="b-more" aria-label="More actions"></button>
+      </div>
+    </div>
+    <div class="bar-right">
+      <div class="vol">
+        <button class="icon-btn" data-act="mute" id="b-vol" aria-label="Mute"></button>
+        <input id="volume" type="range" min="0" max="100" value="80" aria-label="Volume">
+      </div>
+      <button class="icon-btn" data-act="repeat" id="b-repeat" aria-label="Repeat"></button>
+      <button class="icon-btn" data-act="shuffle" id="b-shuffle" aria-label="Shuffle"></button>
+      <button class="icon-btn" data-act="pp-toggle" id="b-expand" aria-label="Open player"></button>
+    </div>
+    <div class="mini-progress"><div id="mini-fill"></div></div>
   </footer>
 
-  <nav id="tabbar"></nav>
+  <nav id="bottomnav" aria-label="Main"></nav>
 </div>
 
-<section id="now" hidden>
-  <header class="now-head">
-    <button class="icon-btn" data-act="close-now" aria-label="Close" id="now-close"></button>
-    <span id="now-output" class="now-output"></span>
-    <button class="pill-btn" data-act="devices"><span class="ico"></span><span>Speakers</span></button>
-  </header>
-  <div class="now-body">
-    <div class="now-main">
-      <div id="now-art" class="art now-art"></div>
-      <div class="now-meta">
-        <div class="now-text">
-          <div id="now-title" class="now-title"></div>
-          <div id="now-sub" class="now-sub"></div>
-        </div>
-        <button id="now-like" class="icon-btn like" data-act="like-current" aria-label="Like"></button>
-      </div>
-      <input id="now-seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-      <div class="now-times"><span id="now-pos">0:00</span><span id="now-dur">0:00</span></div>
-      <div class="now-controls">
-        <button id="now-shuffle" class="icon-btn" data-act="shuffle" aria-label="Shuffle"></button>
-        <button class="icon-btn big" data-act="prev" aria-label="Previous" id="now-prev"></button>
-        <button id="now-play" class="icon-btn play-btn big" data-act="toggle" aria-label="Play"></button>
-        <button class="icon-btn big" data-act="next" aria-label="Next" id="now-next"></button>
-        <button id="now-repeat" class="icon-btn" data-act="repeat" aria-label="Repeat"></button>
-      </div>
-    </div>
-    <div class="now-queue">
-      <h2>Up next</h2>
-      <div id="queue"></div>
-    </div>
-  </div>
-</section>
-
-<div id="menu" hidden></div>
-<dialog id="devices"></dialog>
-<dialog id="prompt"></dialog>
-<div id="toast" hidden></div>
+<div id="menu" role="menu" hidden></div>
+<div id="scrim" hidden></div>
+<dialog id="cast-dlg"></dialog>
+<dialog id="dlg"></dialog>
+<div id="toast" role="status" hidden></div>
 
 <script src="app.js"></script>
 </body>
