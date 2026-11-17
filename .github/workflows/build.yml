@@ -255,6 +255,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: '{binaries,appimage,windows,android}' # not the emulator test's logs and screenshots
           merge-multiple: true
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
