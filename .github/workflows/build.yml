@@ -201,6 +201,7 @@ jobs:
   android-e2e:
     name: Android app in an emulator
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # a stuck emulator must not hold up a release for hours
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
