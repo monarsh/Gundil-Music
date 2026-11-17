@@ -2,3 +2,7 @@
 /gundil-music.exe
 /dist/
 /build/
+/android/e2e/out/
+/android/app/build/
+/android/.gradle/
+/android/build/

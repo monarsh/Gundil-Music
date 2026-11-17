@@ -71,6 +71,13 @@ public class MainActivity extends Activity {
         instance = this;
         prefs = getSharedPreferences("gundil", MODE_PRIVATE);
 
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            WebView.setWebContentsDebuggingEnabled(true); // debug builds only, for automated tests
+        }
+        // "adb shell am start ... --es server 192.168.1.20" sets the server directly.
+        String given = getIntent() != null ? getIntent().getStringExtra("server") : null;
+        if (given != null && !normalize(given).isEmpty()) prefs.edit().putString("server", normalize(given)).apply();
+
         web = new KeepPlayingWebView(this);
         web.setBackgroundColor(Color.parseColor("#030303"));
         web.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -112,6 +119,14 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (url.startsWith("http")) authAsked = false;
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                // The page's renderer crashed or was killed: start over instead of letting Android close the app.
+                android.util.Log.w("GundilMusic", "WebView renderer gone (crash=" + detail.didCrash() + "), reloading");
+                recreate();
+                return true;
             }
 
             @Override

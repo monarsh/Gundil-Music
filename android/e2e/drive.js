@@ -1,0 +1,31 @@
+// Drives the app's WebView over the Chrome DevTools protocol (adb-forwarded
+// to localhost:9222): plays a song, then reports playback state on demand.
+//   node drive.js play | node drive.js state
+const mode = process.argv[2] || 'state';
+(async () => {
+  const pages = await (await fetch('http://127.0.0.1:9222/json')).json();
+  const page = pages.find(p => p.url.startsWith('http://10.0.2.2')) || pages[0];
+  if (!page) throw new Error('no WebView page found');
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  let n = 0;
+  const pending = new Map();
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
+  await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
+  const ev = expr => new Promise(ok => {
+    const id = ++n;
+    pending.set(id, m => ok(m.result && m.result.result ? m.result.result.value : m));
+    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }));
+  });
+  const state = () => ev(`JSON.stringify({ title: (current() || {}).title, t: Math.round(audio.currentTime * 10) / 10, paused: audio.paused, index: S.index, queue: S.queue.length, visible: document.visibilityState, error: audio.error && audio.error.code })`);
+  if (mode === 'play') {
+    for (let i = 0; i < 30; i++) {
+      if (await ev(`!!document.querySelector('.qp-grid .row')`)) break;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    console.log('page:', page.url);
+    await ev(`document.querySelector('.qp-grid .row').click(); true`);
+    await new Promise(r => setTimeout(r, 8000));
+  }
+  console.log(mode, await state());
+  ws.close();
+})().catch(e => { console.error('drive failed:', e.message); process.exit(1); });
