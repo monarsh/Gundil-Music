@@ -555,7 +555,8 @@ audio.addEventListener('error', async () => {
     const r = await fetch(audio.getAttribute('src'), { headers: { Range: 'bytes=0-1' } });
     if (!r.ok) why = ((await r.json().catch(() => ({}))).error || '');
   } catch { /* offline */ }
-  toast(why && /sign in/i.test(why) ? why : `Couldn't play “${t ? t.title : 'this song'}”`);
+  toast(why && /sign in/i.test(why) ? why : `Couldn't play “${t ? t.title : 'this song'}”`,
+    why && !/sign in/i.test(why) ? { label: 'Update', run: () => aboutDialog() } : undefined);
   if (errorsInRow < 4 && S.index + 1 < S.queue.length) setTimeout(() => { if (!isServer()) { S.index++; loadLocal(true); } }, 1200);
   else { S.paused = true; renderPlayer(); }
 });
@@ -1514,12 +1515,32 @@ function confirmDialog(title, text, ok) {
 
 function aboutDialog() {
   const y = S.info.youtube || {};
+  const last = S.info.lastUpdate;
+  const when = last && last.time ? new Date(last.time * 1000).toLocaleString() : '';
   dialog(`<div class="dlg-head"><h2>Gundil Music</h2><button class="icon-btn" data-act="dlg-close" aria-label="Close">${icon('close')}</button></div>
     <p class="muted">Server: <b>${esc(S.info.hostname)}</b> · version ${esc(S.info.version)}</p>
     <p class="muted" style="margin-top:8px">YouTube Music: ${y.ok ? `connected (ytmusicapi ${esc(y.ytmusicapi)}, yt-dlp ${esc(y.yt_dlp)}, JavaScript: ${esc((y.js || []).join(', ') || 'none')})` : esc(y.error || 'not connected')}</p>
     ${y.warning ? `<p style="margin-top:8px">${esc(y.warning)}</p>` : ''}
+    <p class="muted small" style="margin-top:12px">YouTube changes often. The server updates yt-dlp and ytmusicapi daily${when ? `; last updated ${esc(when)}` : ''}.</p>
+    <div class="dlg-actions" style="justify-content:flex-start;margin-top:12px"><button class="btn white" data-act="yt-update">${icon('refresh')}Update YouTube support</button></div>
     <p class="muted small" style="margin-top:16px">Not affiliated with YouTube or Google. Your library is stored on the server.</p>`);
-  $('#dlg').onclick = e => { if (e.target.closest('[data-act="dlg-close"]') || e.target === $('#dlg')) $('#dlg').close(); };
+  $('#dlg').onclick = async e => {
+    if (e.target.closest('[data-act="dlg-close"]') || e.target === $('#dlg')) return $('#dlg').close();
+    const b = e.target.closest('[data-act="yt-update"]');
+    if (!b) return;
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner small"></span>Updating… this can take a minute';
+    try {
+      const r = await api('youtube/update', 'POST', {});
+      S.info = await api('info');
+      toast(r.message);
+      if ($('#dlg').open) aboutDialog();
+    } catch (err) {
+      toast(err.message.split('\n')[0]);
+      b.disabled = false;
+      b.innerHTML = `${icon('refresh')}Try again`;
+    }
+  };
 }
 
 /* =========================================================================
@@ -1847,6 +1868,7 @@ function connectEvents() {
   es.addEventListener('open', () => { serverQVer = -1; }); // the server may have restarted
   es.addEventListener('player', e => applyServer(JSON.parse(e.data)));
   es.addEventListener('state', async () => { try { setUser(await api('state')); } catch { /* ignore */ } });
+  es.addEventListener('info', async () => { try { S.info = await api('info'); } catch { /* ignore */ } });
   es.addEventListener('bluetooth', () => { if ($('#cast-dlg').open) refreshCast(); });
 }
 

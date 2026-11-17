@@ -24,6 +24,12 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlparse
 
+# Packages updated by Gundil Music ("Update YouTube support", daily auto-update)
+# live in a writable folder and take priority over the bundled or system ones.
+PYLIB = os.environ.get("GUNDIL_PYLIB", "")
+if PYLIB and os.path.isdir(PYLIB):
+    sys.path.insert(0, PYLIB)
+
 MISSING = None
 try:
     import yt_dlp
@@ -222,6 +228,8 @@ def m_ping(args):
         "yt_dlp": getattr(getattr(sys.modules.get("yt_dlp"), "version", None), "__version__", ""),
         "js": js_runtimes() if MISSING is None else [],
         "python": sys.version.split()[0],
+        "updated": bool(PYLIB) and any(
+            (getattr(sys.modules.get(m), "__file__", "") or "").startswith(PYLIB) for m in ("yt_dlp", "ytmusicapi")),
     }
 
 

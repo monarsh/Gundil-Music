@@ -52,12 +52,16 @@ type flight struct {
 }
 
 type Client struct {
-	python string
-	script string
+	python  string
+	script  string
+	dataDir string
+
+	updating sync.Mutex // one YouTube library update at a time
 
 	mu      sync.Mutex
 	stdin   io.WriteCloser
 	cmd     *exec.Cmd
+	done    chan struct{} // closed when the current helper's reader exits
 	pending map[int]chan reply
 	next    int
 	lastErr string
@@ -97,7 +101,7 @@ func New(python, script, dataDir string) (*Client, error) {
 		}
 	}
 	return &Client{
-		python: python, script: script,
+		python: python, script: script, dataDir: dataDir,
 		pending: map[int]chan reply{},
 		cache:   map[string]cached{}, flights: map[string]*flight{}, streams: map[string]*Stream{},
 	}, nil
@@ -139,7 +143,7 @@ func (c *Client) start() error {
 		return errors.New("Python 3 was not found on the server. Install it, then run: pip install -U ytmusicapi \"yt-dlp[default]\"")
 	}
 	cmd := exec.Command(c.python, "-u", c.script)
-	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "GUNDIL_PYLIB="+c.pylib())
 	if dir := bundleDir("runtime"); dir != "" {
 		// A JavaScript runtime shipped next to the program (Windows zip, AppImage).
 		cmd.Env = append(cmd.Env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -157,13 +161,18 @@ func (c *Client) start() error {
 		return fmt.Errorf("could not start the YouTube helper: %w", err)
 	}
 	c.cmd, c.stdin = cmd, stdin
+	done := make(chan struct{})
+	c.done = done
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			log.Printf("helper: %s", sc.Text())
 		}
 	}()
-	go c.readLoop(cmd, stdout)
+	go func() {
+		c.readLoop(cmd, stdout)
+		close(done)
+	}()
 	return nil
 }
 
@@ -364,6 +373,30 @@ func (c *Client) Status(ctx context.Context) map[string]any {
 		st["warning"] = "No usable JavaScript runtime was found, so most songs will not play. Install Deno (2.3+) or Node.js (22+) on the server."
 	}
 	return st
+}
+
+// Restart stops the helper and waits for it to exit; the next call starts a
+// fresh one, which picks up newly installed Python packages.
+func (c *Client) Restart() {
+	c.mu.Lock()
+	done := c.done
+	if c.stdin != nil {
+		c.stdin.Close()
+	}
+	if c.cmd != nil && c.cmd.Process != nil {
+		c.cmd.Process.Kill()
+	}
+	c.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	c.cmu.Lock()
+	c.cache = map[string]cached{}
+	c.streams = map[string]*Stream{}
+	c.cmu.Unlock()
 }
 
 // Close stops the helper.

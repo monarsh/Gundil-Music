@@ -69,6 +69,9 @@ jobs:
       - name: Smoke test
         run: |
           app=$(ls dist/*.AppImage)
+          # The AppImage is read-only; updates must land in the data folder.
+          APPIMAGE_EXTRACT_AND_RUN=1 "$app" -update-youtube -data "$RUNNER_TEMP/data"
+          test -d "$RUNNER_TEMP/data/pylib"
           APPIMAGE_EXTRACT_AND_RUN=1 "$app" -open=false -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" > server.log 2>&1 &
           for i in $(seq 60); do curl -sf localhost:8338/api/info > info.json && break; sleep 1; done
           cat info.json; echo
@@ -77,6 +80,7 @@ jobs:
           y = json.load(open('info.json'))['youtube']
           assert y.get('ok'), y
           assert y.get('js'), 'no JavaScript runtime found: %s' % y
+          assert y.get('updated'), 'the updated libraries in the data folder were not used: %s' % y
           print('bundled runtime OK:', y)
           PY
       - name: Real YouTube check (informational)
@@ -111,11 +115,13 @@ jobs:
       - name: Smoke test
         run: |
           cd "build/Gundil Music"
+          ./gundil-music.exe -update-youtube -data "$RUNNER_TEMP/data"
           ./gundil-music.exe -open=false -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" > ../server.log 2>&1 &
           for i in $(seq 60); do curl -sf localhost:8338/api/info > ../info.json && break; sleep 1; done
           cat ../info.json; echo
           grep -q '"ok":true' ../info.json
           grep -q '"js":\["' ../info.json
+          grep -q '"updated":true' ../info.json
       - name: Real YouTube check (informational)
         continue-on-error: true
         run: |

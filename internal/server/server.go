@@ -131,6 +131,19 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/info", s.info)
 	mux.HandleFunc("GET /api/yt/{method}", s.ytCall)
+	mux.HandleFunc("POST /api/youtube/update", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
+		defer cancel()
+		res, err := s.YT.Update(ctx, r.URL.Query().Get("force") == "1")
+		if err != nil {
+			fail(w, 502, err)
+			return
+		}
+		if res.Updated {
+			s.Broadcast("info", nil)
+		}
+		writeJSON(w, res)
+	})
 	mux.HandleFunc("GET /api/stream/{id}", s.stream)
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("id"); model.ValidID(id) {
@@ -300,12 +313,13 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	writeJSON(w, map[string]any{
-		"name":      "Gundil Music",
-		"version":   s.Version,
-		"hostname":  host,
-		"player":    s.Player.Available(),
-		"bluetooth": s.BT.Available(),
-		"youtube":   s.YT.Status(ctx),
+		"name":       "Gundil Music",
+		"version":    s.Version,
+		"hostname":   host,
+		"player":     s.Player.Available(),
+		"bluetooth":  s.BT.Available(),
+		"youtube":    s.YT.Status(ctx),
+		"lastUpdate": s.YT.LastUpdate(),
 	})
 }
 

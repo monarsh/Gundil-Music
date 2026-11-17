@@ -58,6 +58,8 @@ func main() {
 	mpvPath := flag.String("mpv", env("GUNDIL_MPV", ""), "path to mpv (default: look in PATH)")
 	cookies := flag.String("cookies", env("GUNDIL_COOKIES", ""), "cookies.txt for YouTube, if it asks this server to sign in")
 	open := flag.Bool("open", runtime.GOOS == "windows", "open the app in the web browser once started")
+	updateNow := flag.Bool("update-youtube", false, "update yt-dlp and ytmusicapi now, then exit")
+	autoUpdate := flag.Bool("auto-update", env("GUNDIL_AUTO_UPDATE", "true") != "false", "update yt-dlp and ytmusicapi daily when newer versions exist")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -82,6 +84,18 @@ func main() {
 	ytc, err := yt.New(*python, *helper, *dataDir)
 	if err != nil {
 		log.Fatalf("cannot set up the YouTube helper: %v", err)
+	}
+	if *updateNow {
+		fmt.Println("Updating YouTube support (yt-dlp, ytmusicapi)...")
+		r, err := ytc.Update(context.Background(), true)
+		ytc.Close()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("%s: yt-dlp %s, ytmusicapi %s\n", r.Message, r.Versions["yt-dlp"], r.Versions["ytmusicapi"])
+		fmt.Println("Restart Gundil Music if it is running, so it uses the new versions.")
+		return
 	}
 	st := store.New(filepath.Join(*dataDir, "library.json"))
 	if *mpvPath == "" {
@@ -135,6 +149,27 @@ func main() {
 	handler := srv.Handler()
 
 	log.Printf("Gundil Music %s", version)
+	if *autoUpdate {
+		go func() {
+			// YouTube changes often; keep yt-dlp current. First check shortly
+			// after start, then once a day.
+			time.Sleep(3 * time.Minute)
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+				r, err := ytc.Update(ctx, false)
+				cancel()
+				if err != nil {
+					log.Printf("YouTube auto-update: %v", err)
+				} else {
+					log.Printf("YouTube auto-update: %s", r.Message)
+					if r.Updated {
+						srv.Broadcast("info", nil)
+					}
+				}
+				time.Sleep(24 * time.Hour)
+			}
+		}()
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

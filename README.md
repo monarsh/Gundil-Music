@@ -79,8 +79,8 @@ without anyone logging in, and prints the address to open. From your phone:
 
 The speaker is trusted, so it reconnects on its own after a reboot.
 
-YouTube changes often. If songs stop playing, update the libraries:
-`bash scripts/update-youtube.sh`.
+YouTube changes often; the server updates yt-dlp by itself daily (see
+"Keeping YouTube working" below).
 
 ## Other machines
 
@@ -99,9 +99,28 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-mpv` | `GUNDIL_MPV` | `mpv` in PATH | mpv for playing on the server |
 | `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
 | `-open` | | on for Windows | Open the app in the browser after starting |
+| `-auto-update` | `GUNDIL_AUTO_UPDATE` | `true` | Update yt-dlp and ytmusicapi daily when newer versions exist |
+| `-update-youtube` | | | Update yt-dlp and ytmusicapi now, then exit |
 | `-cookies` | `GUNDIL_COOKIES` | `<data>/cookies.txt` if present | YouTube cookies, for when YouTube asks the server to sign in |
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
 | | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
+
+## Keeping YouTube working
+
+YouTube changes often, and yt-dlp releases fixes quickly. Gundil Music keeps
+up by itself: once a day the server checks PyPI and, when newer yt-dlp or
+ytmusicapi versions exist, installs them into `<data folder>/pylib`. That
+folder takes priority over the bundled copies, so this works for the
+AppImage, the Windows zip, a Pi and Termux alike. To update right away:
+
+- in the app: avatar menu → **About** → **Update YouTube support**
+- AppImage: `./Gundil_Music-…-x86_64.AppImage -update-youtube`
+- Windows: `gundil-music.exe -update-youtube`
+- Pi / Orange Pi: `bash update-youtube.sh` (updates, then restarts the service)
+- anywhere else: `gundil-music -update-youtube`
+
+Then restart the server, unless you used the button, which takes effect
+immediately. Turn the daily check off with `-auto-update=false`.
 
 If songs fail with "YouTube wants this server to sign in", YouTube is
 challenging your server's network (common on cloud servers and VPNs, rare at
