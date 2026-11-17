@@ -70,6 +70,7 @@ type Client struct {
 	cache   map[string]cached
 	flights map[string]*flight
 	streams map[string]*Stream
+	quality string // default audio quality
 }
 
 // New prepares a client. python may be empty to search PATH. script may be
@@ -317,21 +318,60 @@ func (c *Client) Cached(ctx context.Context, method string, args map[string]stri
 	}
 }
 
-// Stream resolves (and caches) the audio URL for a video. refresh forces a
-// new lookup, for when YouTube rejected the cached URL.
+// Format picks which stream of a video to fetch.
+type Format struct {
+	Kind    string // "audio" (default) or "video" (video only, no sound)
+	Quality string // audio: low, normal, high
+	Height  string // video: highest picture height, e.g. 720
+}
+
+func (f Format) args(videoID string) map[string]string {
+	a := map[string]string{"videoId": videoID}
+	if f.Kind == "video" {
+		a["kind"] = "video"
+		a["height"] = f.Height
+	} else if f.Quality != "" && f.Quality != "normal" {
+		a["quality"] = f.Quality
+	}
+	return a
+}
+
+// Stream resolves (and caches) the audio URL for a video, in the server's
+// default audio quality. refresh forces a new lookup, for when YouTube
+// rejected the cached URL.
 func (c *Client) Stream(ctx context.Context, videoID string, refresh bool) (*Stream, error) {
+	return c.StreamFormat(ctx, videoID, Format{Quality: c.AudioQuality()}, refresh)
+}
+
+// SetAudioQuality sets the default audio quality: low, normal or high.
+func (c *Client) SetAudioQuality(q string) {
 	c.cmu.Lock()
-	s := c.streams[videoID]
+	c.quality = q
+	c.cmu.Unlock()
+}
+
+func (c *Client) AudioQuality() string {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	return c.quality
+}
+
+// StreamFormat resolves (and caches) the URL of one stream of a video.
+func (c *Client) StreamFormat(ctx context.Context, videoID string, f Format, refresh bool) (*Stream, error) {
+	args := f.args(videoID)
+	key := cacheKey("stream", args)
+	c.cmu.Lock()
+	s := c.streams[key]
 	if refresh {
-		delete(c.streams, videoID)
-		delete(c.cache, cacheKey("stream", map[string]string{"videoId": videoID}))
+		delete(c.streams, key)
+		delete(c.cache, key)
 		s = nil
 	}
 	c.cmu.Unlock()
 	if s != nil && (s.Expires == 0 || time.Now().Unix() < s.Expires-300) {
 		return s, nil
 	}
-	data, err := c.Cached(ctx, "stream", map[string]string{"videoId": videoID}, 0)
+	data, err := c.Cached(ctx, "stream", args, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +391,7 @@ func (c *Client) Stream(ctx context.Context, videoID string, refresh bool) (*Str
 			}
 		}
 	}
-	c.streams[videoID] = s
+	c.streams[key] = s
 	c.cmu.Unlock()
 	return s, nil
 }

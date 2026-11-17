@@ -32,6 +32,8 @@ type State struct {
 	Autoplay     bool          `json:"autoplay"`
 	Loading      bool          `json:"loading"`
 	Error        string        `json:"error,omitempty"`
+	SleepAt      int64         `json:"sleepAt,omitempty"`  // sleep timer: pause at this time (Unix ms)
+	SleepEnd     bool          `json:"sleepEnd,omitempty"` // sleep timer: pause when this song ends
 }
 
 // AudioDevice is an output mpv can play to.
@@ -68,6 +70,7 @@ type Player struct {
 	failures  int
 	device    string
 	extending bool
+	sleep     *time.Timer
 }
 
 // New returns a player. mpvPath may be empty to look mpv up in PATH.
@@ -370,6 +373,17 @@ func (p *Player) advance(auto, failed bool) {
 	defer p.opMu.Unlock()
 	p.mu.Lock()
 	n := len(p.st.Queue)
+	if auto && !failed && p.st.SleepEnd {
+		// Sleep timer set to the end of the song: stop here, ready with the next one.
+		p.st.SleepEnd = false
+		p.st.Playing, p.st.Position = false, 0
+		if p.st.Index+1 < n {
+			p.st.Index++
+		}
+		p.mu.Unlock()
+		p.changed()
+		return
+	}
 	if failed {
 		p.failures++
 	} else {
@@ -475,6 +489,66 @@ func (p *Player) Remove(index int) error {
 	p.mu.Unlock()
 	p.changed()
 	return nil
+}
+
+// Move moves the track at from to position to, keeping the current track playing.
+func (p *Player) Move(from, to int) error {
+	p.mu.Lock()
+	n := len(p.st.Queue)
+	if from < 0 || from >= n || to < 0 || to >= n {
+		p.mu.Unlock()
+		return errors.New("cannot move that track")
+	}
+	if from != to {
+		q := p.st.Queue
+		t := q[from]
+		copy(q[from:], q[from+1:])
+		q = q[:n-1]
+		q = append(q[:to], append([]model.Track{t}, q[to:]...)...)
+		p.st.Queue = q
+		switch cur := p.st.Index; {
+		case cur == from:
+			p.st.Index = to
+		case from < cur && to >= cur:
+			p.st.Index--
+		case from > cur && to <= cur:
+			p.st.Index++
+		}
+		p.st.QueueVersion++
+	}
+	p.mu.Unlock()
+	p.changed()
+	return nil
+}
+
+// SetSleep sets the sleep timer: pause after d, or when the current song ends
+// (atEnd). Zero d without atEnd turns the timer off.
+func (p *Player) SetSleep(d time.Duration, atEnd bool) {
+	p.mu.Lock()
+	if p.sleep != nil {
+		p.sleep.Stop()
+		p.sleep = nil
+	}
+	p.st.SleepAt, p.st.SleepEnd = 0, atEnd
+	if !atEnd && d > 0 {
+		at := time.Now().Add(d)
+		p.st.SleepAt = at.UnixMilli()
+		var t *time.Timer
+		t = time.AfterFunc(d, func() {
+			p.mu.Lock()
+			if p.sleep != t {
+				p.mu.Unlock()
+				return
+			}
+			p.sleep, p.st.SleepAt = nil, 0
+			p.mu.Unlock()
+			p.SetPaused(true)
+			p.changed()
+		})
+		p.sleep = t
+	}
+	p.mu.Unlock()
+	p.changed()
 }
 
 func (p *Player) SetAutoplay(on bool) {

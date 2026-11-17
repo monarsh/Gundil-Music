@@ -157,6 +157,19 @@ public class MainActivity extends Activity {
     }
 
     // Deliberately no web.onPause(): the page must keep playing in the background.
+    // The page is told instead, so it can stop the music video's picture (not the sound).
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (web != null) js("window.gundilVisible && window.gundilVisible(true)");
+    }
+
+    @Override
+    protected void onStop() {
+        if (web != null) js("window.gundilVisible && window.gundilVisible(false)");
+        super.onStop();
+    }
 
     @Override
     protected void onDestroy() {

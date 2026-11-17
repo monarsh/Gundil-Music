@@ -26,6 +26,7 @@ import (
 	"github.com/monarsh/gundil-music/internal/model"
 	"github.com/monarsh/gundil-music/internal/player"
 	"github.com/monarsh/gundil-music/internal/server"
+	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
 	"github.com/monarsh/gundil-music/internal/yt"
 )
@@ -81,6 +82,15 @@ func main() {
 		os.Setenv("GUNDIL_COOKIES", abs) // read by the helper
 		log.Printf("using YouTube cookies from %s", abs)
 	}
+	// Settings chosen in the app; the command-line options are the defaults.
+	cfg := settings.Load(filepath.Join(*dataDir, "settings.json"), settings.Settings{
+		Region: os.Getenv("GUNDIL_REGION"), Language: os.Getenv("GUNDIL_LANG"), AutoUpdate: *autoUpdate,
+	})
+	applyEnv := func(c settings.Settings) {
+		os.Setenv("GUNDIL_REGION", c.Region) // read by the helper
+		os.Setenv("GUNDIL_LANG", c.Language)
+	}
+	applyEnv(cfg.Get())
 	ytc, err := yt.New(*python, *helper, *dataDir)
 	if err != nil {
 		log.Fatalf("cannot set up the YouTube helper: %v", err)
@@ -97,6 +107,7 @@ func main() {
 		fmt.Println("Restart Gundil Music if it is running, so it uses the new versions.")
 		return
 	}
+	ytc.SetAudioQuality(cfg.Get().AudioQuality)
 	st := store.New(filepath.Join(*dataDir, "library.json"))
 	if *mpvPath == "" {
 		// The Windows zip and the AppImage may carry mpv next to the program.
@@ -119,7 +130,14 @@ func main() {
 	tcp := ln.Addr().(*net.TCPAddr)
 
 	web, _ := fs.Sub(webFiles, "web")
-	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port}
+	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port, Settings: cfg}
+	srv.OnSettings = func(old, now settings.Settings) {
+		ytc.SetAudioQuality(now.AudioQuality)
+		if old.Region != now.Region || old.Language != now.Language {
+			applyEnv(now)
+			go ytc.Restart() // results in the new region and language
+		}
+	}
 
 	pl.Resolve = srv.StreamURL
 	pl.OnChange = srv.BroadcastPlayer
@@ -149,12 +167,12 @@ func main() {
 	handler := srv.Handler()
 
 	log.Printf("Gundil Music %s", version)
-	if *autoUpdate {
-		go func() {
-			// YouTube changes often; keep yt-dlp current. First check shortly
-			// after start, then once a day.
-			time.Sleep(3 * time.Minute)
-			for {
+	go func() {
+		// YouTube changes often; keep yt-dlp current. First check shortly
+		// after start, then once a day, unless turned off in Settings.
+		time.Sleep(3 * time.Minute)
+		for {
+			if cfg.Get().AutoUpdate {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 				r, err := ytc.Update(ctx, false)
 				cancel()
@@ -166,10 +184,10 @@ func main() {
 						srv.Broadcast("info", nil)
 					}
 				}
-				time.Sleep(24 * time.Hour)
 			}
-		}()
-	}
+			time.Sleep(24 * time.Hour)
+		}
+	}()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

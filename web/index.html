@@ -43,11 +43,23 @@
   <section id="pp" aria-label="Now playing" hidden>
     <div class="pp-top">
       <button class="icon-btn" data-act="pp-close" aria-label="Close player" id="pp-close"></button>
-      <div class="pp-where" id="pp-where"></div>
-      <button class="icon-btn cast-btn" data-act="cast" aria-label="Speakers and Bluetooth"></button>
+      <div class="pp-center">
+        <div class="pp-mode" id="pp-mode" role="group" aria-label="Song or video">
+          <button data-act="mode" data-mode="song">Song</button><button data-act="mode" data-mode="video">Video</button>
+        </div>
+        <div class="pp-where" id="pp-where"></div>
+      </div>
+      <div class="pp-right">
+        <button class="icon-btn sleep-btn" data-act="sleep" id="pp-sleep" aria-label="Sleep timer" title="Sleep timer"></button>
+        <button class="icon-btn cast-btn" data-act="cast" aria-label="Speakers and Bluetooth"></button>
+      </div>
     </div>
     <div class="pp-main">
-      <div class="pp-art" id="pp-art"></div>
+      <div class="pp-art" id="pp-art">
+        <div class="pp-img" id="pp-img"></div>
+        <video id="pp-video" muted playsinline disablepictureinpicture preload="auto" data-act="video-tap"></video>
+        <button class="icon-btn pp-fs" data-act="fullscreen" id="pp-fs" aria-label="Full screen" title="Full screen"></button>
+      </div>
       <div class="pp-info">
         <div class="pp-titles">
           <div class="pp-title" id="pp-title"></div>

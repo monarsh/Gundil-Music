@@ -60,6 +60,11 @@ const ICONS = {
   phone: 'M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z',
   info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
   lyrics: 'M14 17H4v2h10v-2zm6-8H4v2h16V9zM4 15h16v-2H4v2zM4 5v2h16V5H4z',
+  drag: 'M20 9H4v2h16V9zM4 15h16v-2H4v2z',
+  timer: 'M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.96 8.96 0 0012 4a9 9 0 109 9c0-2.12-.74-4.07-1.97-5.61zM12 20a7 7 0 110-14 7 7 0 010 14z',
+  settings: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 110-7.2 3.6 3.6 0 010 7.2z',
+  fullscreen: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
+  fullscreenExit: 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z',
   refresh: 'M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z',
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
@@ -148,6 +153,10 @@ const S = {
   playing: false, paused: true, loading: false, position: 0, duration: 0,
   volume: local.get('volume', 80), muted: false,
   ppOpen: false, ppTab: 'upnext',
+  mode: local.get('mode', 'song'), // Song / Video switch
+  sleep: { at: 0, end: false },     // sleep timer: pause at (ms), or at the end of the song
+  visible: true,                    // the app is on screen (the Android app tells us)
+  settings: null,
 };
 const reg = new Map(); // key -> registered item or list, referenced from the DOM
 let regN = 0;
@@ -161,6 +170,8 @@ function register(v) {
 const audio = new Audio();
 audio.preload = 'auto';
 const isServer = () => S.output === 'server';
+const audioQuality = () => local.get('quality', 'normal');
+const streamSrc = id => `/api/stream/${id}?q=${audioQuality()}`;
 const current = () => S.queue[S.index];
 
 /* A compact copy of a track, as stored in queues, history and playlists. */
@@ -273,6 +284,7 @@ function applyServer(st) {
   S.volume = st.volume;
   S.repeat = st.repeat;
   S.autoplay = st.autoplay;
+  S.sleep = { at: st.sleepAt || 0, end: !!st.sleepEnd };
   if (st.error && st.error !== S.lastError) toast(st.error);
   S.lastError = st.error;
   renderPlayer();
@@ -282,11 +294,23 @@ function saveLocalQueue() {
   if (!isServer()) local.set('queue', { tracks: S.queue.slice(0, 500), index: S.index, source: S.source });
 }
 
-let errorsInRow = 0;
-function loadLocal(play, at = 0) {
+let errorsInRow = 0, loadToken = 0;
+function loadLocal(play, at = 0, ready = false) {
   const t = current();
   if (!t) return;
-  audio.src = '/api/stream/' + t.videoId;
+  const tok = ++loadToken;
+  if (!ready && S.mode === 'video' && t.type !== 'video' && !t.noVideo) {
+    // Video mode: play the song's music video when it has one, like YouTube Music.
+    S.playing = true; S.paused = !play; S.loading = play;
+    renderPlayer();
+    findVideo(t).then(alt => {
+      if (tok !== loadToken || current() !== t) return;
+      if (alt) { swapBack.set(alt.videoId, t); S.queue[S.index] = alt; S.queueVer++; }
+      loadLocal(play, at, true);
+    });
+    return;
+  }
+  audio.src = streamSrc(t.videoId);
   if (at > 0) audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
   S.playing = true;
   S.paused = !play;
@@ -298,7 +322,7 @@ function loadLocal(play, at = 0) {
     api('history', 'POST', { track: slim(t) }).then(u => { S.user = u; }).catch(() => {});
   }
   const nxt = S.queue[S.index + 1];
-  if (nxt) api('prefetch/' + nxt.videoId, 'POST').catch(() => {});
+  if (nxt) api(`prefetch/${nxt.videoId}?q=${audioQuality()}`, 'POST').catch(() => {});
   if (S.autoplay && S.index >= S.queue.length - 2) extendLocal();
   saveLocalQueue();
   renderPlayer();
@@ -396,6 +420,20 @@ function removeFromQueue(i) {
   renderPlayer();
 }
 
+/* Move a queue entry (drag to reorder), keeping the current song playing. */
+function moveInQueue(from, to) {
+  if (from === to || from < 0 || to < 0 || from >= S.queue.length || to >= S.queue.length) return;
+  if (isServer()) return srv('move', { from, to });
+  const [t] = S.queue.splice(from, 1);
+  S.queue.splice(to, 0, t);
+  if (S.index === from) S.index = to;
+  else if (from < S.index && to >= S.index) S.index--;
+  else if (from > S.index && to <= S.index) S.index++;
+  S.queueVer++;
+  saveLocalQueue();
+  renderPlayer();
+}
+
 function toggle() {
   if (!S.queue.length) return;
   if (isServer()) return srv('toggle');
@@ -431,6 +469,7 @@ function seek(sec) {
   renderProgress();
   if (isServer()) return srv('seek', { position: sec });
   if (audio.src) audio.currentTime = sec;
+  if (video.getAttribute('src') && video.readyState > 0) video.currentTime = sec;
 }
 
 function setVolume(v) {
@@ -493,6 +532,9 @@ async function setOutput(out) {
   if (out === 'server' && !S.info.player) return;
   const tracks = S.queue.slice(), index = S.index, pos = S.position, source = S.source;
   const wasPlaying = S.playing && !S.paused;
+  const sleep = { ...S.sleep };
+  clearTimeout(sleepTimer);
+  if (out === 'local' && S.server && (S.server.sleepAt || S.server.sleepEnd)) api('player/sleep', 'POST', { minutes: 0 }).catch(() => {});
   S.output = out;
   local.set('output', out);
   if (out === 'server') {
@@ -518,6 +560,8 @@ async function setOutput(out) {
     S.queueVer++;
     if (tracks.length && index >= 0) loadLocal(wasPlaying, pos);
   }
+  if (sleep.at > Date.now() || sleep.end) await setSleep(sleep.end ? 0 : (sleep.at - Date.now()) / 60000, sleep.end).catch(() => {});
+  else S.sleep = isServer() ? S.sleep : { at: 0, end: false };
   renderCast();
   renderPlayer();
 }
@@ -526,7 +570,10 @@ audio.addEventListener('timeupdate', () => {
   if (isServer()) return;
   S.position = audio.currentTime;
   renderProgress();
+  if (videoShown) fixDrift(false);
+  if (S.sleep.at && Date.now() >= S.sleep.at) sleepNow(); // timers can be slowed in the background
 });
+audio.addEventListener('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
 audio.addEventListener('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; renderPlayer(); } });
 audio.addEventListener('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
 audio.addEventListener('pause', () => { if (!isServer()) { S.paused = true; renderPlayer(); } });
@@ -537,6 +584,12 @@ audio.addEventListener('loadedmetadata', () => {
 });
 audio.addEventListener('ended', async () => {
   if (isServer()) return;
+  if (S.sleep.end) {
+    // Sleep timer: stop at the end of this song, ready with the next one.
+    S.sleep = { at: 0, end: false };
+    if (S.index + 1 < S.queue.length) { S.index++; loadLocal(false); } else { S.paused = true; renderPlayer(); }
+    return;
+  }
   if (S.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
   if (S.index + 1 < S.queue.length) { S.index++; loadLocal(true); return; }
   if (S.repeat === 'all') { S.index = 0; loadLocal(true); return; }
@@ -624,7 +677,7 @@ function renderPlayer() {
     if (t) {
       $('#b-title').textContent = t.title;
       $('#b-sub').innerHTML = trackSub(t, { views: false }) + (t.year ? ' • ' + esc(t.year) : '');
-      $('#pp-art').innerHTML = img(t.thumb, 720);
+      $('#pp-img').innerHTML = img(t.thumb, 720);
       $('#pp-art').classList.toggle('video', t.type === 'video' && !/googleusercontent/.test(t.thumb));
       $('#pp-title').textContent = t.title;
       $('#pp-sub').innerHTML = artistLinks(t.artists);
@@ -659,11 +712,194 @@ function renderPlayer() {
   }
   $('#b-expand').innerHTML = icon(S.ppOpen ? 'down' : 'up');
   $('#pp-where').textContent = S.source ? `Playing from ${S.source}` : '';
+  for (const b of $$('#pp-mode button')) b.classList.toggle('on', b.dataset.mode === (isServer() ? 'song' : S.mode));
+  $('#pp-mode').classList.toggle('off', isServer());
   renderRating();
   renderVolume();
   renderProgress();
+  renderSleep();
   if (S.ppOpen && S.ppTab === 'upnext' && shownQueue !== S.queueVer + ':' + S.index) renderPPTab();
+  syncVideo();
   reportToAndroid();
+}
+
+/* =========================================================================
+   Song / Video switch
+   ========================================================================= */
+const video = $('#pp-video');
+const swapBack = new Map(); // music video id -> the song it stands in for
+let videoShown = false, lastFix = 0;
+const videoHeight = () => { const q = local.get('videoQuality', 'auto'); return q !== 'auto' ? q : mobile() ? '480' : '720'; };
+
+function videoActive() {
+  const t = current();
+  return !!(t && t.type === 'video' && S.mode === 'video' && !isServer() && S.ppOpen && S.visible && !document.hidden);
+}
+
+function showVideo(on) {
+  if (videoShown === on) return;
+  videoShown = on;
+  $('#pp-art').classList.toggle('show-video', on);
+  if (!on) setFullscreen(false);
+}
+
+/* The picture is a muted video stream kept in step with the song, so sound
+   never stops when the app is minimised or the screen goes off. */
+function syncVideo() {
+  const t = current();
+  if (!videoActive()) {
+    if (!video.paused) video.pause();
+    showVideo(false);
+    const keep = t && t.type === 'video' && S.mode === 'video' && !isServer() && video.dataset.vid === t.videoId;
+    if (!keep && video.getAttribute('src')) { video.removeAttribute('src'); video.dataset.key = video.dataset.vid = ''; video.load(); }
+    return;
+  }
+  const key = t.videoId + '@' + videoHeight();
+  if (video.dataset.key !== key) {
+    if (video.dataset.failed === t.videoId) return;
+    video.dataset.key = key;
+    video.dataset.vid = t.videoId;
+    showVideo(false);
+    video.src = `/api/stream/${t.videoId}?kind=video&h=${videoHeight()}`;
+  }
+  if (S.playing && !S.paused && !S.loading) {
+    fixDrift(true);
+    if (video.paused) video.play().catch(() => {});
+  } else if (!video.paused) video.pause();
+}
+
+function fixDrift(force) {
+  if (video.readyState < 1 || video.seeking) return;
+  const d = video.currentTime - audio.currentTime;
+  if (Math.abs(d) > 0.4) {
+    if (!force && Date.now() - lastFix < 2000) return;
+    lastFix = Date.now();
+    video.playbackRate = 1;
+    video.currentTime = audio.currentTime + (video.paused ? 0 : 0.1);
+  } else video.playbackRate = Math.abs(d) > 0.06 ? (d > 0 ? 0.95 : 1.05) : 1;
+}
+
+video.addEventListener('loadedmetadata', () => { video.currentTime = audio.currentTime || 0; });
+video.addEventListener('playing', () => { if (videoActive()) showVideo(true); });
+video.addEventListener('error', () => {
+  if (!video.getAttribute('src')) return;
+  video.dataset.failed = video.dataset.vid;
+  video.removeAttribute('src');
+  showVideo(false);
+  toast('This video can\'t be shown here. The song keeps playing.');
+});
+document.addEventListener('visibilitychange', syncVideo);
+window.gundilVisible = v => { S.visible = !!v; syncVideo(); };
+
+/* A song's music video, from YouTube Music's song/video pairs. */
+async function findVideo(t) {
+  if (t.noVideo) return null;
+  try {
+    const w = await Promise.race([yt('watch', { videoId: t.videoId }), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 5000))]);
+    const me = w.tracks.find(x => x.videoId === t.videoId) || w.tracks[0];
+    if (me && me.counterpart && me.counterpart.type === 'video') return slim(me.counterpart);
+    t.noVideo = true;
+  } catch { /* slow or offline: play the song */ }
+  return null;
+}
+
+async function setMode(mode) {
+  if (isServer()) {
+    toast('Video plays on this device only. Choose “This device” under Speakers to watch.');
+    return;
+  }
+  if (mode === S.mode) return;
+  S.mode = mode;
+  local.set('mode', mode);
+  renderPlayer();
+  const t = current();
+  if (!t) return;
+  const at = audio.currentTime || S.position, play = S.playing && !S.paused;
+  if (mode === 'video' && t.type !== 'video') {
+    const alt = await findVideo(t);
+    if (current() !== t || S.mode !== 'video') return;
+    if (!alt) { toast('This song doesn\'t have a video'); return; }
+    swapBack.set(alt.videoId, t);
+    S.queue[S.index] = alt;
+    S.queueVer++;
+    loadLocal(play, at, true);
+  } else if (mode === 'song' && swapBack.has(t.videoId)) {
+    S.queue[S.index] = swapBack.get(t.videoId);
+    S.queueVer++;
+    loadLocal(play, at, true);
+  }
+}
+
+function setFullscreen(on) {
+  const art = $('#pp-art');
+  if (on === art.classList.contains('fs')) return;
+  art.classList.toggle('fs', on);
+  $('#pp-fs').innerHTML = icon(on ? 'fullscreenExit' : 'fullscreen');
+  $('#pp-fs').setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
+  try {
+    if (on && art.requestFullscreen && document.fullscreenEnabled) art.requestFullscreen().catch(() => {});
+    else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch { /* not supported: the page-filling view is enough */ }
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) setFullscreen(false); });
+
+/* =========================================================================
+   sleep timer
+   ========================================================================= */
+let sleepTimer = null;
+function sleepToast(minutes, end) {
+  toast(end ? 'Music will stop at the end of this song' : minutes > 0 ? `Sleep timer set for ${minutes >= 60 ? plural(minutes / 60, 'hour') : plural(minutes, 'minute')}` : 'Sleep timer off');
+}
+async function setSleep(minutes, end) {
+  clearTimeout(sleepTimer);
+  sleepTimer = null;
+  if (isServer()) {
+    if (await srv('sleep', { minutes, end })) sleepToast(minutes, end);
+    return;
+  }
+  S.sleep = { at: !end && minutes > 0 ? Date.now() + minutes * 60000 : 0, end: !!end };
+  if (S.sleep.at) sleepTimer = setTimeout(sleepNow, minutes * 60000);
+  sleepToast(minutes, end);
+  renderPlayer();
+}
+function sleepNow() {
+  clearTimeout(sleepTimer);
+  sleepTimer = null;
+  S.sleep = { at: 0, end: false };
+  renderSleep();
+  if (isServer() || audio.paused) return;
+  const vol = audio.volume;
+  let i = 0;
+  const fade = setInterval(() => { // fade out over three seconds, like falling asleep
+    audio.volume = Math.max(0, vol * (1 - ++i / 20));
+    if (i >= 20) { clearInterval(fade); audio.pause(); audio.volume = vol; }
+  }, 150);
+}
+function sleepLeft() {
+  if (S.sleep.end) return 'End of song';
+  if (!S.sleep.at) return '';
+  const s = Math.max(0, Math.round((S.sleep.at - Date.now()) / 1000));
+  return fmt(s) || '0:00';
+}
+let shownSleep = null;
+function renderSleep() {
+  const left = sleepLeft();
+  if (left === shownSleep) return;
+  shownSleep = left;
+  const b = $('#pp-sleep');
+  b.classList.toggle('on', !!left);
+  b.innerHTML = icon('timer') + (left ? `<span>${esc(left)}</span>` : '');
+  b.title = left ? `Sleep timer: ${left}` : 'Sleep timer';
+}
+setInterval(() => { if (S.sleep.at) renderSleep(); }, 1000);
+function sleepMenu(anchor) {
+  const on = S.sleep.at || S.sleep.end;
+  showMenu([
+    ...[5, 10, 15, 30, 45, 60].map(m => ({ icon: 'timer', label: m === 60 ? '1 hour' : `${m} minutes`, run: () => setSleep(m, false) })),
+    current() ? { icon: 'timer', label: 'End of song', run: () => setSleep(0, true) } : null,
+    on ? '-' : null,
+    on ? { icon: 'close', label: 'Turn off timer', run: () => setSleep(0, false) } : null,
+  ], anchor, `<div class="menu-title">Sleep timer${on ? ` · ${esc(sleepLeft())}` : ''}</div>`);
 }
 
 /* The Android app shows a media notification and keeps playing in the background. */
@@ -687,6 +923,7 @@ window.gundilControl = cmd => {
   else if (cmd === 'prev') prev();
 };
 window.gundilBack = () => {
+  if ($('#pp-art').classList.contains('fs')) { setFullscreen(false); return true; }
   if (!$('#menu').hidden) { hideMenu(); return true; }
   if ($('dialog[open]')) { $('dialog[open]').close(); return true; }
   if ($('#app').classList.contains('searching')) { $('#app').classList.remove('searching'); closeSuggest(); return true; }
@@ -737,6 +974,7 @@ async function renderPPTab() {
   const t = current();
   if (!t) return;
   if (S.ppTab === 'upnext') {
+    if (dragging) return; // redrawn when the drag ends
     shownQueue = S.queueVer + ':' + S.index;
     const scroll = body.scrollTop;
     body.innerHTML = upNextHTML();
@@ -802,6 +1040,7 @@ function upNextHTML() {
       <div class="row-text"><div class="row-title">${esc(t.title)}${explicit(t)}</div><div class="row-sub">${esc(names(t))}</div></div>
       <div class="row-actions">${on ? '' : `<button class="icon-btn" data-act="q-remove" aria-label="Remove from queue" title="Remove from queue">${icon('close')}</button>`}</div>
       <div class="row-dur">${fmt(t.duration)}</div>
+      <button class="icon-btn drag-handle" aria-label="Drag to reorder" title="Drag to reorder">${icon('drag')}</button>
     </div>`;
   }
   return `<div class="pp-source"><div><div class="muted small">Playing from</div><div class="pp-source-title">${esc(S.source || 'Queue')}</div></div>
@@ -834,6 +1073,7 @@ function songRow(t, list, idx, o = {}) {
     ${o.plays ? `<div class="row-plays">${esc(t.plays || '')}</div>` : ''}
     <div class="row-actions"><span class="rate-box">${rateButtons(t)}</span><button class="icon-btn" data-act="menu" aria-label="More actions">${icon('more')}</button></div>
     ${o.noDur ? '' : `<div class="row-dur">${fmt(t.duration)}</div>`}
+    ${o.drag ? `<button class="icon-btn drag-handle" aria-label="Drag to reorder" title="Drag to reorder">${icon('drag')}</button>` : ''}
   </div>`;
 }
 
@@ -1089,7 +1329,7 @@ async function viewPlaylist(id) {
         : `<button class="circle-btn lg" data-act="edit-playlist" data-id="${own.id}" aria-label="Edit playlist">${icon('edit')}</button>
            <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>
            <button class="circle-btn lg" data-act="own-menu" data-k="${k}" data-list="${list}" aria-label="More actions">${icon('more')}</button>`,
-      rows: own.tracks.length ? own.tracks.map((t, i) => songRow(t, list, i, { albumCol: !mobile() })).join('')
+      rows: own.tracks.length ? own.tracks.map((t, i) => songRow(t, list, i, { albumCol: !mobile(), drag: !own.auto && own.tracks.length > 1 })).join('')
         : emptyHTML(own.auto ? 'like' : 'playlistAdd', own.auto ? 'No liked songs yet' : 'This playlist is empty', own.auto ? 'Tap the thumbs up on a song to add it here.' : 'Use “Save to playlist” on any song to add it.'),
     });
   }
@@ -1351,6 +1591,7 @@ function trackMenu(t, anchor, ctx = {}) {
     t.album && t.album.id ? { icon: 'album', label: 'Go to album', run: () => { location.hash = '#/album/' + enc(t.album.id); } } : null,
     art ? { icon: 'artist', label: 'Go to artist', run: () => { location.hash = '#/artist/' + enc(art.id); } } : null,
     { icon: 'share', label: 'Share', run: () => share(`https://music.youtube.com/watch?v=${t.videoId}`) },
+    ctx.current ? { icon: 'timer', label: 'Sleep timer', run: () => sleepMenu(anchor) } : null,
   ], anchor, menuHead(t.thumb, t.title, names(t)));
 }
 
@@ -1423,7 +1664,7 @@ async function share(url) {
 function dialog(html) {
   const d = $('#dlg');
   if (d.open) d.close();
-  d.onclick = null;
+  d.onclick = d.onchange = null;
   d.innerHTML = html;
   d.returnValue = '';
   d.showModal();
@@ -1527,20 +1768,197 @@ function aboutDialog() {
   $('#dlg').onclick = async e => {
     if (e.target.closest('[data-act="dlg-close"]') || e.target === $('#dlg')) return $('#dlg').close();
     const b = e.target.closest('[data-act="yt-update"]');
-    if (!b) return;
-    b.disabled = true;
-    b.innerHTML = '<span class="spinner small"></span>Updating… this can take a minute';
-    try {
-      const r = await api('youtube/update', 'POST', {});
-      S.info = await api('info');
-      toast(r.message);
-      if ($('#dlg').open) aboutDialog();
-    } catch (err) {
-      toast(err.message.split('\n')[0]);
-      b.disabled = false;
-      b.innerHTML = `${icon('refresh')}Try again`;
+    if (b) await runYtUpdate(b, () => { if ($('#dlg').open) aboutDialog(); });
+  };
+}
+
+/* =========================================================================
+   drag to reorder (Up next and your playlists)
+   ========================================================================= */
+let dragging = null;
+document.addEventListener('pointerdown', e => {
+  const h = e.target.closest('.drag-handle');
+  if (!h || e.button > 0) return;
+  const row = h.closest('.row');
+  const box = row && row.parentElement;
+  if (!box) return;
+  e.preventDefault();
+  const rows = [...box.children].filter(r => r.classList.contains('row'));
+  dragging = {
+    row, box, from: rows.indexOf(row),
+    keys: rows.map(r => +(r.dataset.q !== undefined ? r.dataset.q : r.dataset.idx)),
+    scroller: row.closest('.pp-body') || $('#main'), y: e.clientY,
+  };
+  row.classList.add('dragging');
+  try { h.setPointerCapture(e.pointerId); } catch { /* fine without */ }
+  dragging.timer = setInterval(dragScroll, 30);
+});
+function dragScroll() {
+  if (!dragging) return;
+  const r = dragging.scroller.getBoundingClientRect();
+  const edge = 56;
+  const dy = dragging.y < r.top + edge ? -(r.top + edge - dragging.y) / 4 : dragging.y > r.bottom - edge ? (dragging.y - (r.bottom - edge)) / 4 : 0;
+  if (dy) { dragging.scroller.scrollTop += dy; dragOver(); }
+}
+function dragOver() {
+  const { row, box, y } = dragging;
+  const others = [...box.children].filter(r => r.classList.contains('row') && r !== row);
+  const before = others.find(r => { const b = r.getBoundingClientRect(); return y < b.top + b.height / 2; });
+  if (before) { if (row.nextElementSibling !== before) box.insertBefore(row, before); }
+  else if (others.length && others[others.length - 1].nextElementSibling !== row) others[others.length - 1].after(row);
+}
+document.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  e.preventDefault();
+  dragging.y = e.clientY;
+  dragOver();
+}, { passive: false });
+function endDrag() {
+  if (!dragging) return;
+  const { row, box, from, keys, timer } = dragging;
+  clearInterval(timer);
+  dragging = null;
+  row.classList.remove('dragging');
+  const at = [...box.children].filter(r => r.classList.contains('row')).indexOf(row);
+  shownQueue = -1;
+  if (at === from || at < 0) { if (S.ppOpen) renderPPTab(); return; }
+  const a = keys[from], b = keys[at];
+  if (row.dataset.q !== undefined) return void moveInQueue(a, b);
+  const l = reg.get(row.dataset.list);
+  if (l && l.own && l.own !== 'LM') movePlaylistTrack(l.own, a, b);
+}
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
+
+async function movePlaylistTrack(id, from, to) {
+  const p = S.user.playlists.find(x => x.id === id);
+  if (!p) return;
+  const tracks = p.tracks.slice();
+  const [t] = tracks.splice(from, 1);
+  tracks.splice(to, 0, t);
+  try { setUser(await api('playlists/' + id, 'PUT', { tracks })); } catch (e) { toast(e.message); }
+  route(true);
+}
+
+/* =========================================================================
+   settings
+   ========================================================================= */
+const QUALITY = [['low', 'Low'], ['normal', 'Normal'], ['high', 'High']];
+const VIDEO_QUALITY = [['auto', 'Auto'], ['360', '360p'], ['480', '480p'], ['720', '720p'], ['1080', '1080p']];
+function displayName(type, code) {
+  try { return new Intl.DisplayNames([navigator.language || 'en', 'en'], { type }).of(code.replace('_', '-')) || code; } catch { return code; }
+}
+const options = (list, value) => list.map(([v, label]) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(label)}</option>`).join('');
+const setRow = (title, sub, control) => `<div class="set-row"><div class="set-text"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>${control}</div>`;
+const switchBtn = (key, on) => `<button class="switch${on ? ' on' : ''}" data-set="${key}" role="switch" aria-checked="${on}"></button>`;
+
+async function settingsDialog() {
+  const d = dialog(`<div class="dlg-head"><h2>Settings</h2><button class="icon-btn" data-act="dlg-close" aria-label="Close">${icon('close')}</button></div><div class="spinner"></div>`);
+  d.classList.add('wide');
+  d.addEventListener('close', () => d.classList.remove('wide'), { once: true });
+  bindSettings(d);
+  let data = {};
+  try { data = await api('settings'); } catch (e) { toast(e.message); }
+  if (!d.open) return;
+  S.settings = data.settings || S.settings;
+  S.options = data.options || S.options;
+  renderSettings(d);
+}
+
+function renderSettings(d) {
+  const st = S.settings || {};
+  const op = S.options || { languages: [], locations: [] };
+  const regions = [['', 'Default (chosen by YouTube)'], ...op.locations.map(c => [c, displayName('region', c)]).sort((a, b) => a[1].localeCompare(b[1]))];
+  if (st.region && !op.locations.includes(st.region)) regions.push([st.region, st.region]);
+  const langs = op.languages.map(c => [c, displayName('language', c)]).sort((a, b) => a[1].localeCompare(b[1]));
+  if (!langs.length) langs.push([st.language || 'en', displayName('language', st.language || 'en')]);
+  const last = S.info.lastUpdate;
+  $('.spinner', d) && $('.spinner', d).remove();
+  const body = $('.settings', d) || d.appendChild(Object.assign(document.createElement('div'), { className: 'settings' }));
+  body.innerHTML = `
+    <h3>Playback on this device</h3>
+    ${setRow('Audio quality', 'Lower quality uses less mobile data', `<select data-set="quality">${options(QUALITY, audioQuality())}</select>`)}
+    ${setRow('Video quality', 'For the Video side of the Song / Video switch', `<select data-set="videoQuality">${options(VIDEO_QUALITY, local.get('videoQuality', 'auto'))}</select>`)}
+    ${setRow('Autoplay', 'Keep playing similar songs when the queue ends', switchBtn('autoplay', S.autoplay))}
+    <h3>Server <span class="muted small">· ${esc(S.info.hostname || '')}, for everyone using it</span></h3>
+    ${setRow('Region', 'Which country Home, Explore and charts are for', `<select data-set="region">${options(regions, st.region || '')}</select>`)}
+    ${setRow('Language', 'Language of YouTube Music titles and sections', `<select data-set="language">${options(langs, st.language || 'en')}</select>`)}
+    ${setRow('Speaker audio quality', 'When the server plays to its speaker or Bluetooth', `<select data-set="audioQuality">${options(QUALITY, st.audioQuality || 'normal')}</select>`)}
+    ${setRow('Update YouTube support daily', last && last.time ? `Last updated ${new Date(last.time * 1000).toLocaleString()}` : 'Installs new yt-dlp and ytmusicapi versions when YouTube changes', switchBtn('autoUpdate', !!st.autoUpdate))}
+    <div class="set-row"><div class="set-text"><b>Update YouTube support now</b></div><button class="btn small" data-set="yt-update">${icon('refresh')}Update</button></div>
+    <h3>History</h3>
+    <div class="set-row"><div class="set-text"><b>Clear watch history</b><span>Songs you played, on this server</span></div><button class="btn small" data-set="clear-history">Clear</button></div>
+    <div class="set-row"><div class="set-text"><b>Clear search history</b></div><button class="btn small" data-set="clear-searches">Clear</button></div>`;
+}
+
+async function saveServerSetting(change) {
+  try {
+    const r = await api('settings', 'PUT', change);
+    settingsChanged(r.settings);
+    return true;
+  } catch (e) { toast(e.message); return false; }
+}
+
+/* The server's settings changed (here or on another device). */
+function settingsChanged(now) {
+  const old = S.settings;
+  S.settings = now;
+  if (old && (old.region !== now.region || old.language !== now.language)) {
+    ytCache.clear();
+    toast(now.region ? `YouTube Music results now for ${displayName('region', now.region)}` : 'YouTube Music region set to default');
+    setTimeout(() => route(true), 1500); // the helper restarts with the new region
+  }
+  if ($('#dlg').open && $('.settings', $('#dlg'))) renderSettings($('#dlg'));
+}
+
+function bindSettings(d) {
+  d.onchange = async e => {
+    const el = e.target.closest('[data-set]');
+    if (!el) return;
+    const k = el.dataset.set, v = el.value;
+    if (k === 'quality') { local.set('quality', v); toast(S.playing && !isServer() ? 'Audio quality changes from the next song' : 'Audio quality saved'); }
+    else if (k === 'videoQuality') { local.set('videoQuality', v); syncVideo(); }
+    else await saveServerSetting({ [k]: v });
+  };
+  d.onclick = async e => {
+    if (e.target.closest('[data-act="dlg-close"]') || e.target === d) return d.close();
+    const el = e.target.closest('button[data-set]');
+    if (!el) return;
+    const k = el.dataset.set;
+    if (k === 'autoplay') { setAutoplay(!S.autoplay); renderSettings(d); }
+    else if (k === 'autoUpdate') await saveServerSetting({ autoUpdate: !(S.settings || {}).autoUpdate });
+    else if (k === 'yt-update') await runYtUpdate(el, () => { if (d.open) renderSettings(d); });
+    else if (k === 'clear-history') {
+      if (await confirmInline(el)) { setUser(await api('history', 'DELETE')); toast('Watch history cleared'); }
+    } else if (k === 'clear-searches') {
+      if (await confirmInline(el)) { setUser(await api('searches', 'DELETE')); toast('Search history cleared'); }
     }
   };
+}
+
+/* Second tap confirms, so a dialog doesn't have to open over this one. */
+function confirmInline(btn) {
+  if (btn.dataset.sure) return Promise.resolve(true);
+  btn.dataset.sure = '1';
+  btn.textContent = 'Tap again to clear';
+  setTimeout(() => { if (btn.isConnected) { delete btn.dataset.sure; btn.textContent = 'Clear'; } }, 4000);
+  return Promise.resolve(false);
+}
+
+async function runYtUpdate(b, done) {
+  b.disabled = true;
+  const was = b.innerHTML;
+  b.innerHTML = '<span class="spinner small"></span>Updating… this can take a minute';
+  try {
+    const r = await api('youtube/update', 'POST', {});
+    S.info = await api('info');
+    toast(r.message);
+    if (done) done();
+  } catch (err) {
+    toast(err.message.split('\n')[0]);
+    b.innerHTML = was;
+  }
+  b.disabled = false;
 }
 
 /* =========================================================================
@@ -1665,7 +2083,11 @@ document.addEventListener('click', async e => {
       case 'dislike-current': if (current()) await rate(current(), 'dislike'); return;
       case 'save-current': if (current()) saveToPlaylist([current()]); return;
       case 'share-current': if (current()) share(`https://music.youtube.com/watch?v=${current().videoId}`); return;
-      case 'current-menu': if (current()) trackMenu(current(), actEl, { queueIndex: S.index }); return;
+      case 'current-menu': if (current()) trackMenu(current(), actEl, { queueIndex: S.index, current: true }); return;
+      case 'mode': return void setMode(actEl.dataset.mode);
+      case 'sleep': return void sleepMenu(actEl);
+      case 'fullscreen': return void setFullscreen(!$('#pp-art').classList.contains('fs'));
+      case 'video-tap': return void ($('#pp-art').classList.contains('fs') ? toggle() : null);
       case 'save-queue': return void newPlaylistDialog(S.queue);
       case 'q-remove': return void removeFromQueue(+row.dataset.q);
       case 'lyric-seek': return void seek(+actEl.dataset.start);
@@ -1684,6 +2106,7 @@ document.addEventListener('click', async e => {
           { icon: 'library', label: 'Library', run: () => { location.hash = '#/library'; } },
           { icon: 'history', label: 'History', run: () => { location.hash = '#/library/history'; } },
           { icon: 'cast', label: 'Speakers & Bluetooth', run: openCast },
+          { icon: 'settings', label: 'Settings', run: settingsDialog },
           { icon: 'info', label: 'About', run: aboutDialog },
           android ? { icon: 'speaker', label: 'Change server', run: () => android.changeServer() } : null,
         ], actEl);
@@ -1839,7 +2262,8 @@ $('#volume').addEventListener('input', e => {
 document.addEventListener('keydown', e => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range';
   if (e.key === 'Escape') {
-    if (!$('#menu').hidden) hideMenu();
+    if ($('#pp-art').classList.contains('fs')) setFullscreen(false);
+    else if (!$('#menu').hidden) hideMenu();
     else if (S.ppOpen && !$('dialog[open]')) closePlayer();
     return;
   }
@@ -1869,6 +2293,7 @@ function connectEvents() {
   es.addEventListener('player', e => applyServer(JSON.parse(e.data)));
   es.addEventListener('state', async () => { try { setUser(await api('state')); } catch { /* ignore */ } });
   es.addEventListener('info', async () => { try { S.info = await api('info'); } catch { /* ignore */ } });
+  es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data)));
   es.addEventListener('bluetooth', () => { if ($('#cast-dlg').open) refreshCast(); });
 }
 
@@ -1888,6 +2313,7 @@ function staticIcons() {
   set('#b-shuffle, #pp-shuffle', 'shuffle');
   set('#b-more', 'more');
   set('#pp-close', 'down');
+  set('#pp-fs', 'fullscreen');
   set('.ico-playlist-add', 'playlistAdd');
   set('.ico-share', 'share');
 }

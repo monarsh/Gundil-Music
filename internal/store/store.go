@@ -179,6 +179,13 @@ func (s *Store) ClearHistory() {
 	s.saveLocked()
 }
 
+func (s *Store) ClearSearches() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Searches = []string{}
+	s.saveLocked()
+}
+
 func (s *Store) AddSearch(q string) {
 	q = strings.TrimSpace(q)
 	if q == "" || len(q) > 200 {

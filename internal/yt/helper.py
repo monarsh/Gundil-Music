@@ -379,8 +379,19 @@ def m_watch(args):
         if shuffle and not radio:
             kw["shuffle"] = True
     w = yt().get_watch_playlist(**kw)
+    tracks = []
+    for x in w.get("tracks") or []:
+        t = track(x)
+        if not t:
+            continue
+        # The song's music video, or the video's song: YouTube Music's Song/Video switch.
+        alt = track(x.get("counterpart"), default_thumb=t["thumb"]) if x.get("counterpart") else None
+        if alt:
+            alt["type"] = "song" if t["type"] == "video" else "video"
+            t["counterpart"] = alt
+        tracks.append(t)
     return {
-        "tracks": [t for t in (track(x) for x in w.get("tracks") or []) if t],
+        "tracks": tracks,
         "playlistId": w.get("playlistId") or "", "lyrics": w.get("lyrics") or "", "related": w.get("related") or "",
     }
 
@@ -402,36 +413,68 @@ def m_related(args):
     return {"sections": sections(yt().get_song_related(args["id"]))}
 
 
-_ydl = None
+_ydl = {}
 _ydl_lock = threading.Lock()
 
+# What to fetch for each stream kind. Audio formats play in every browser and in mpv;
+# video-only streams are muted pictures the app keeps in step with the audio.
+AUDIO_FORMATS = {
+    "low": "worstaudio[abr>=40][ext=m4a]/bestaudio[abr<=70]/worstaudio[abr>=40]/bestaudio[ext=m4a]/bestaudio/best",
+    "normal": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best",
+    "high": "bestaudio/best",
+}
 
-def m_stream(args):
-    global _ydl
-    vid = args["videoId"]
+
+def video_format(height):
+    h = int(height) if str(height).isdigit() else 720
+    return (f"bestvideo[height<={h}][vcodec^=avc1][ext=mp4]/bestvideo[height<={h}][ext=mp4]/"
+            f"bestvideo[height<={h}][vcodec^=vp9]/bestvideo[height<={h}]/best[height<={h}]")
+
+
+def ydl_for(fmt):
     with _ydl_lock:
-        if _ydl is None:
-            _ydl = yt_dlp.YoutubeDL({
+        if fmt not in _ydl:
+            _ydl[fmt] = yt_dlp.YoutubeDL({
                 "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
-                "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best",
+                "format": fmt,
                 "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
                 **({"cookiefile": COOKIES} if COOKIES else {}),
             })
-        ydl = _ydl
-    info = ydl.extract_info("https://www.youtube.com/watch?v=" + vid, download=False)
+        return _ydl[fmt]
+
+
+def m_stream(args):
+    vid = args["videoId"]
+    kind = args.get("kind") or "audio"
+    if kind == "video":
+        fmt = video_format(args.get("height") or "720")
+    else:
+        fmt = AUDIO_FORMATS.get(args.get("quality") or "normal", AUDIO_FORMATS["normal"])
+    info = ydl_for(fmt).extract_info("https://www.youtube.com/watch?v=" + vid, download=False)
     url = info.get("url")
     if not url and info.get("requested_formats"):
         url = info["requested_formats"][0].get("url")
     if not url:
-        raise RuntimeError("no playable audio stream found")
+        raise RuntimeError("no playable %s stream found" % ("video" if kind == "video" else "audio"))
     ext = info.get("ext") or ""
-    mime = {"m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm", "mp3": "audio/mpeg", "opus": "audio/ogg"}.get(ext, "")
+    if kind == "video":
+        mime = {"mp4": "video/mp4", "webm": "video/webm"}.get(ext, "")
+    else:
+        mime = {"m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm", "mp3": "audio/mpeg", "opus": "audio/ogg"}.get(ext, "")
     expire = parse_qs(urlparse(url).query).get("expire", ["0"])[0]
     return {
         "url": url, "headers": info.get("http_headers") or {}, "mime": mime, "ext": ext,
         "expires": int(expire) if expire.isdigit() else 0, "duration": info.get("duration") or 0,
         "size": info.get("filesize") or info.get("filesize_approx") or 0,
+        "height": info.get("height") or 0, "abr": info.get("abr") or 0,
     }
+
+
+def m_options(args):
+    """Languages and countries YouTube Music results can be shown for."""
+    from ytmusicapi.constants import SUPPORTED_LANGUAGES, SUPPORTED_LOCATIONS
+    return {"languages": sorted(SUPPORTED_LANGUAGES), "locations": sorted(SUPPORTED_LOCATIONS),
+            "language": LANG, "location": REGION}
 
 
 METHODS = {name[2:]: fn for name, fn in globals().items() if name.startswith("m_")}

@@ -22,6 +22,7 @@ import (
 	"github.com/monarsh/gundil-music/internal/bluetooth"
 	"github.com/monarsh/gundil-music/internal/model"
 	"github.com/monarsh/gundil-music/internal/player"
+	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
 	"github.com/monarsh/gundil-music/internal/yt"
 )
@@ -35,6 +36,10 @@ type Server struct {
 	Version string
 	Auth    string // "user:password", empty for no auth
 	Port    int
+
+	Settings *settings.Store
+	// OnSettings applies changed settings (region, language, quality...).
+	OnSettings func(old, now settings.Settings)
 
 	token string // lets mpv on this machine fetch streams when auth is on
 
@@ -147,9 +152,41 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stream/{id}", s.stream)
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("id"); model.ValidID(id) {
-			go s.YT.Stream(context.Background(), id, false)
+			f := s.format(r)
+			go s.YT.StreamFormat(context.Background(), id, f, false)
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		out := map[string]any{"settings": s.Settings.Get()}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if data, err := s.YT.Cached(ctx, "options", nil, 24*time.Hour); err == nil {
+			out["options"] = json.RawMessage(data)
+		}
+		writeJSON(w, out)
+	})
+	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		var bad error
+		old, now, err := s.Settings.Update(func(st *settings.Settings) { bad = json.Unmarshal(body, st) })
+		if bad != nil {
+			fail(w, 400, bad)
+			return
+		}
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		if s.OnSettings != nil && old != now {
+			s.OnSettings(old, now)
+		}
+		s.Broadcast("settings", now)
+		writeJSON(w, map[string]any{"settings": now})
 	})
 
 	mux.HandleFunc("GET /api/state", s.state)
@@ -189,7 +226,11 @@ func (s *Server) Handler() http.Handler {
 		s.changedState(w)
 	})
 	mux.HandleFunc("DELETE /api/searches", func(w http.ResponseWriter, r *http.Request) {
-		s.Store.RemoveSearch(r.URL.Query().Get("q"))
+		if q := r.URL.Query().Get("q"); q != "" {
+			s.Store.RemoveSearch(q)
+		} else {
+			s.Store.ClearSearches()
+		}
 		s.changedState(w)
 	})
 	mux.HandleFunc("POST /api/saved", func(w http.ResponseWriter, r *http.Request) {
@@ -365,9 +406,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientRange := r.Header.Get("Range")
+	f := s.format(r)
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		st, err := s.YT.Stream(r.Context(), id, attempt > 0)
+		st, err := s.YT.StreamFormat(r.Context(), id, f, attempt > 0)
 		if err != nil {
 			lastErr = err
 			break
@@ -430,6 +472,26 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// format reads which stream a request wants: ?q=low|normal|high for audio,
+// or ?kind=video&h=720 for a video picture. Audio defaults to the server's quality.
+func (s *Server) format(r *http.Request) yt.Format {
+	q := r.URL.Query()
+	if q.Get("kind") == "video" {
+		h := q.Get("h")
+		switch h {
+		case "360", "480", "720", "1080":
+		default:
+			h = "720"
+		}
+		return yt.Format{Kind: "video", Height: h}
+	}
+	switch v := q.Get("q"); v {
+	case "low", "normal", "high":
+		return yt.Format{Quality: v}
+	}
+	return yt.Format{Quality: s.YT.AudioQuality()}
+}
+
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(s.Store.JSON())
@@ -454,6 +516,10 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 		Mode     string        `json:"mode"`
 		Name     string        `json:"name"`
 		On       bool          `json:"on"`
+		From     int           `json:"from"`
+		To       int           `json:"to"`
+		Minutes  float64       `json:"minutes"`
+		End      bool          `json:"end"`
 	}
 	if r.ContentLength != 0 {
 		if err := readBody(r, &b); err != nil {
@@ -470,6 +536,10 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 		p.Insert(b.Tracks, b.Next)
 	case "remove":
 		err = p.Remove(b.Index)
+	case "move":
+		err = p.Move(b.From, b.To)
+	case "sleep":
+		p.SetSleep(time.Duration(b.Minutes*float64(time.Minute)), b.End)
 	case "jump":
 		err = p.Jump(b.Index)
 	case "pause":

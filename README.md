@@ -13,6 +13,9 @@ What you get, laid out like YouTube Music:
 - **Search** with suggestions, a top result, and Songs / Videos / Albums / Artists / Playlists filters
 - **Album, artist and playlist pages** with Play, Shuffle, Mix and Save
 - **Player** with Up next (autoplay radio keeps the music going), synced Lyrics and Related
+- **Song / Video switch**: watch the music video in step with the song, full screen if you like
+- **Drag to reorder** Up next and your playlists, and a **sleep timer**
+- **Settings**: audio and video quality, region and language, daily YouTube updates, clearing history
 - **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
 - **Background play**: keeps playing when the app is minimised or the screen is off, for free
@@ -105,6 +108,10 @@ Open the printed address (default `http://<this-machine>:8338`).
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
 | | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
 
+Region, language, the server's audio quality and the daily update can also be
+changed in the app under **Settings**. They're saved in `<data>/settings.json`
+and take priority over these options.
+
 ## Keeping YouTube working
 
 YouTube changes often, and yt-dlp releases fixes quickly. Gundil Music keeps
@@ -113,14 +120,14 @@ ytmusicapi versions exist, installs them into `<data folder>/pylib`. That
 folder takes priority over the bundled copies, so this works for the
 AppImage, the Windows zip, a Pi and Termux alike. To update right away:
 
-- in the app: avatar menu → **About** → **Update YouTube support**
+- in the app: avatar menu → **Settings** → **Update** (or **About** → **Update YouTube support**)
 - AppImage: `./Gundil_Music-…-x86_64.AppImage -update-youtube`
 - Windows: `gundil-music.exe -update-youtube`
 - Pi / Orange Pi: `bash update-youtube.sh` (updates, then restarts the service)
 - anywhere else: `gundil-music -update-youtube`
 
 Then restart the server, unless you used the button, which takes effect
-immediately. Turn the daily check off with `-auto-update=false`.
+immediately. Turn the daily check off in Settings or with `-auto-update=false`.
 
 If songs fail with "YouTube wants this server to sign in", YouTube is
 challenging your server's network (common on cloud servers and VPNs, rare at
@@ -175,6 +182,7 @@ internal/server       HTTP API, audio stream proxy, live updates, static files
 internal/player       server-side playback through mpv, with autoplay
 internal/bluetooth    pairing and connecting through bluetoothctl
 internal/store        likes, playlists, saved items, history (one JSON file)
+internal/settings     server settings chosen in the app
 web/                  the app
 android/              the Android app (Java, built with Gradle)
 packaging/            AppImage and Windows zip extras
