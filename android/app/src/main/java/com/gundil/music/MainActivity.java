@@ -71,7 +71,7 @@ public class MainActivity extends Activity {
         instance = this;
         prefs = getSharedPreferences("gundil", MODE_PRIVATE);
 
-        web = new WebView(this);
+        web = new KeepPlayingWebView(this);
         web.setBackgroundColor(Color.parseColor("#030303"));
         web.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(web);
@@ -366,6 +366,22 @@ public class MainActivity extends Activity {
                     stopService(new Intent(MainActivity.this, PlaybackService.class));
                 }
             } catch (Exception ignored) { }
+        }
+    }
+
+    /**
+     * A WebView that never learns it was hidden. When the app is minimised or
+     * the screen turns off, Android tells WebViews they are invisible and
+     * Chromium then throttles the page and may suspend its media. Gundil
+     * Music must keep playing and moving to the next song, so we always
+     * report "visible".
+     */
+    static final class KeepPlayingWebView extends WebView {
+        KeepPlayingWebView(Context c) { super(c); }
+
+        @Override
+        protected void onWindowVisibilityChanged(int visibility) {
+            if (visibility != android.view.View.GONE) super.onWindowVisibilityChanged(android.view.View.VISIBLE);
         }
     }
 

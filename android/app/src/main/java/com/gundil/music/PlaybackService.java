@@ -5,8 +5,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.media.AudioManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -42,6 +45,14 @@ public class PlaybackService extends Service {
     private boolean playing, local = true;
     private Bitmap art;
 
+    /** Headphones unplugged or a Bluetooth speaker disconnected: pause, don't blast the phone speaker. */
+    private final BroadcastReceiver noisy = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context c, Intent i) {
+            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction()) && playing && local) control("pause");
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -60,6 +71,10 @@ public class PlaybackService extends Service {
             @Override public void onStop() { control("pause"); }
         });
         session.setActive(true);
+
+        IntentFilter f = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisy, f, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(noisy, f);
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GundilMusic:playback");
@@ -189,6 +204,7 @@ public class PlaybackService extends Service {
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        try { unregisterReceiver(noisy); } catch (RuntimeException ignored) { }
         if (wake.isHeld()) wake.release();
         if (wifi != null && wifi.isHeld()) wifi.release();
         session.release();

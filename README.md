@@ -15,6 +15,7 @@ What you get, laid out like YouTube Music:
 - **Player** with Up next (autoplay radio keeps the music going), synced Lyrics and Related
 - **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
+- **Background play**: keeps playing when the app is minimised or the screen is off, for free
 
 Gundil Music is not affiliated with YouTube or Google. It uses YouTube Music's
 unofficial web API (through [ytmusicapi](https://github.com/sigma67/ytmusicapi))
