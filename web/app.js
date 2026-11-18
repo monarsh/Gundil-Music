@@ -41,6 +41,9 @@ const ICONS = {
   logout: 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z',
   import: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
   check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+  download: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
+  downloadDone: 'M5 18h14v2H5v-2zm4.6-2.7L5 10.7l2-1.9 2.6 2.6L17 4l2 2-9.4 9.3z',
+  offline: 'M23.64 7c-.45-.34-4.93-4-11.64-4-1.5 0-2.89.19-4.15.48L18.18 13.8 23.64 7zm-6.6 8.22L3.27 1.44 2 2.72l2.05 2.06C1.91 5.76.59 6.82.36 7l11.63 14.49.01.01.01-.01 3.9-4.86 3.32 3.32 1.27-1.27-3.46-3.46z',
   playlistAdd: 'M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z',
   playNext: 'M19 9H2v2h17V9zm0-4H2v2h17V5zM2 15h13v-2H2v2zm15-2v6l5-3-5-3z',
   queue: 'M15 6H3v2h12zm0 4H3v2h12zM3 16h8v-2H3zM17 6v8.18c-.31-.11-.65-.18-1-.18a3 3 0 103 3V8h3V6z',
@@ -101,7 +104,7 @@ function sized(url, px) {
   }
   return url;
 }
-const img = (url, px, alt = '') => url ? `<img src="${esc(sized(url, px))}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer">` : '';
+const img = (url, px, alt = '') => url ? `<img src="${esc(dlThumbs.get(url) || sized(url, px))}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer">` : '';
 
 async function api(path, method = 'GET', body) {
   const res = await fetch('/api/' + path, {
@@ -328,20 +331,25 @@ function loadLocal(play, at = 0, ready = false) {
   }
   if (!fadeKeep) endFade();
   fadeKeep = false;
-  const src = streamSrc(t.videoId);
-  if (audio.getAttribute('src') !== src) audio.src = src;
-  if (at > 0) audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
+  const id = t.videoId;
+  const start = src => {
+    if (audio.getAttribute('src') !== src) audio.src = src;
+    if (at > 0) audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
+    if (play) audio.play().catch(e => { if (e.name === 'NotAllowedError') { S.paused = true; S.loading = false; renderPlayer(); } });
+  };
+  if (dl.list[id] && !dl.urls.has(id)) {
+    // Downloaded: open the copy on this device first (a moment), else stream.
+    dlUrl(id).then(u => { if (tok === loadToken) start(u || streamSrc(id)); }, () => { if (tok === loadToken) start(streamSrc(id)); });
+  } else start(srcFor(id));
   S.playing = true;
   S.paused = !play;
   S.loading = play;
   S.position = at;
   S.duration = t.duration || 0;
-  if (play) {
-    audio.play().catch(e => { if (e.name === 'NotAllowedError') { S.paused = true; S.loading = false; renderPlayer(); } });
-    api('history', 'POST', { track: slim(t) }).then(u => { S.user = u; }).catch(() => {});
-  }
+  if (play && !S.offline) api('history', 'POST', { track: slim(t) }).then(u => { S.user = u; }).catch(() => {});
   const nxt = S.queue[S.index + 1];
-  if (nxt) api(`prefetch/${nxt.videoId}?q=${audioQuality()}`, 'POST').catch(() => {});
+  if (nxt && dl.list[nxt.videoId]) dlUrl(nxt.videoId).catch(() => {}); // ready for a crossfade
+  else if (nxt && !S.offline) api(`prefetch/${nxt.videoId}?q=${audioQuality()}`, 'POST').catch(() => {});
   if (S.autoplay && S.index >= S.queue.length - 2) extendLocal();
   saveLocalQueue();
   renderPlayer();
@@ -906,7 +914,7 @@ function maybeCrossfade() {
   const ni = nextIndex();
   if (ni < 0) return;
   const other = decks[0] === audio ? decks[1] : decks[0];
-  const nsrc = streamSrc(S.queue[ni].videoId);
+  const nsrc = srcFor(S.queue[ni].videoId);
   // Start loading the next song a little early, so it's ready to fade in.
   if (left <= secs + 12 && other.getAttribute('src') !== nsrc) { other.src = nsrc; other.volume = 0; other.load(); }
   if (left > secs) return;
@@ -1231,7 +1239,7 @@ function songRow(t, list, idx, o = {}) {
   const sub = o.sub !== undefined ? o.sub : trackSub(t, { album: !o.albumCol, views: !!o.views });
   return `<div class="row${t.videoId === shown ? ' playing' : ''}${t.available === false ? ' disabled' : ''}" data-list="${list}" data-idx="${idx}" data-vid="${t.videoId}">
     ${lead}
-    <div class="row-text"><div class="row-title">${esc(t.title)}${explicit(t)}</div>${sub ? `<div class="row-sub">${sub}</div>` : ''}</div>
+    <div class="row-text"><div class="row-title">${esc(t.title)}${explicit(t)}${dlMark(t)}</div>${sub ? `<div class="row-sub">${sub}</div>` : ''}</div>
     ${o.albumCol ? `<div class="row-col">${albumLink(t.album)}</div>` : ''}
     ${o.plays ? `<div class="row-plays">${esc(t.plays || '')}</div>` : ''}
     <div class="row-actions"><span class="rate-box">${rateButtons(t)}</span><button class="icon-btn" data-act="menu" aria-label="More actions">${icon('more')}</button></div>
@@ -1462,7 +1470,7 @@ async function viewAlbum(id) {
     meta2: [a.trackCount ? plural(+a.trackCount, 'song') : '', esc(a.duration)].filter(Boolean).join(' • '),
     desc: a.description,
     actions: `<button class="circle-btn lg" data-act="toggle-save" data-k="${k}" title="${saved ? 'Remove from library' : 'Save to library'}" aria-label="${saved ? 'Remove from library' : 'Save to library'}">${icon(saved ? 'libDone' : 'libAdd')}</button>
-      <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>
+      <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>${dlButton(list)}
       <button class="circle-btn lg" data-act="item-menu" data-k="${k}" aria-label="More actions">${icon('more')}</button>`,
     rows,
     after: a.other && a.other.length ? shelf({ title: 'Other versions', items: a.other }) : '',
@@ -1488,9 +1496,9 @@ async function viewPlaylist(id) {
       desc: own.description,
       actions: own.auto
         ? `<button class="circle-btn lg" data-act="list-shuffle" data-list="${list}" aria-label="Shuffle">${icon('shuffle')}</button>
-           <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>`
+           <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>${dlButton(list)}`
         : `<button class="circle-btn lg" data-act="edit-playlist" data-id="${own.id}" aria-label="Edit playlist">${icon('edit')}</button>
-           <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>
+           <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>${dlButton(list)}
            <button class="circle-btn lg" data-act="own-menu" data-k="${k}" data-list="${list}" aria-label="More actions">${icon('more')}</button>`,
       rows: own.tracks.length ? own.tracks.map((t, i) => songRow(t, list, i, { albumCol: !mobile(), drag: !own.auto && own.tracks.length > 1 })).join('')
         : emptyHTML(own.auto ? 'like' : 'playlistAdd', own.auto ? 'No liked songs yet' : 'This playlist is empty', own.auto ? 'Tap the thumbs up on a song to add it here.' : 'Use “Save to playlist” on any song to add it.'),
@@ -1507,7 +1515,7 @@ async function viewPlaylist(id) {
     meta2: [esc(p.views), p.trackCount ? plural(+p.trackCount, 'song') : '', esc(p.duration)].filter(Boolean).join(' • '),
     desc: p.description,
     actions: `<button class="circle-btn lg" data-act="toggle-save" data-k="${k}" aria-label="${saved ? 'Remove from library' : 'Save to library'}">${icon(saved ? 'libDone' : 'libAdd')}</button>
-      <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>
+      <button class="play-circle" data-act="list-play" data-list="${list}" aria-label="Play">${icon('play')}</button>${dlButton(list)}
       <button class="circle-btn lg" data-act="item-menu" data-k="${k}" aria-label="More actions">${icon('more')}</button>`,
     rows: p.tracks.map((t, i) => songRow(t, list, i, { albumCol: !mobile() })).join('') || emptyHTML('queue', 'This playlist is empty', ''),
   });
@@ -1537,11 +1545,14 @@ async function viewArtist(id) {
 }
 
 async function viewLibrary(tab) {
-  const tabs = [['playlists', 'Playlists'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['history', 'History']];
+  let tabs = [['playlists', 'Playlists'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['downloads', 'Downloads'], ['history', 'History']];
+  if (S.offline) { tabs = [['downloads', 'Downloads']]; tab = 'downloads'; }
   if (!tabs.some(t => t[0] === tab)) tab = 'playlists';
   const u = S.user;
   let body;
-  if (tab === 'songs') {
+  if (tab === 'downloads') {
+    body = downloadsView();
+  } else if (tab === 'songs') {
     const list = register({ tracks: u.liked, source: 'Liked Music', mode: 'list', own: 'LM' });
     body = u.liked.length ? `<div class="list">${u.liked.map((t, i) => songRow(t, list, i, { albumCol: !mobile() })).join('')}</div>`
       : emptyHTML('like', 'No songs yet', 'Songs you like show up here.');
@@ -1594,7 +1605,9 @@ async function route(keepScroll) {
   const spin = setTimeout(() => { if (n === routeN) view.innerHTML = '<div class="spinner"></div>'; }, 120);
   let html, failed = false;
   try {
-    switch (page) {
+    if (S.offline && page !== 'library') {
+      html = `<div class="banner warn">${icon('offline')}<div><b>You're offline.</b> Only downloaded songs play until the server can be reached.</div></div>` + emptyHTML('offline', 'Not available offline', '', '<a class="btn white" href="#/library/downloads">Go to downloads</a>');
+    } else switch (page) {
       case 'explore':
         html = parts[1] === 'new' ? await viewNewReleases() : parts[1] === 'charts' ? await viewCharts(parts[2]) : parts[1] === 'moods' ? await viewMoods() : await viewExplore();
         break;
@@ -1755,6 +1768,8 @@ function trackMenu(t, anchor, ctx = {}) {
     { icon: 'queue', label: 'Add to queue', run: () => insert([t], false) },
     { icon: r === 'like' ? 'like' : 'likeOff', label: r === 'like' ? 'Remove from liked songs' : 'Add to liked songs', run: () => rate(t, 'like') },
     { icon: 'playlistAdd', label: 'Save to playlist', run: () => saveToPlaylist([t]) },
+    isDownloaded(t.videoId) ? { icon: 'downloadDone', label: 'Remove download', run: () => removeDownloads([t.videoId]).then(() => { toast('Download removed'); if (location.hash.startsWith('#/library/downloads')) route(true); }) }
+      : { icon: 'download', label: 'Download', run: () => download([t]) },
     ctx.queueIndex !== undefined && ctx.queueIndex !== S.index ? { icon: 'remove', label: 'Remove from queue', run: () => removeFromQueue(ctx.queueIndex) } : null,
     ctx.own && ctx.own !== 'LM' ? { icon: 'remove', label: 'Remove from playlist', run: () => removeFromPlaylist(ctx.own, ctx.idx) } : null,
     '-',
@@ -1810,6 +1825,7 @@ function itemMenu(it, anchor) {
     { icon: 'queue', label: 'Add to queue', run: async () => insert(await tracksOf(it), false) },
     it.own ? null : { icon: saved ? 'libDone' : 'libAdd', label: saved ? 'Remove from library' : 'Save to library', run: () => setSaved(it, !saved) },
     { icon: 'playlistAdd', label: 'Save to playlist', run: async () => saveToPlaylist(await tracksOf(it)) },
+    it.type === 'artist' ? null : { icon: 'download', label: 'Download', run: async () => download(await tracksOf(it)) },
     it.own ? null : { icon: 'import', label: 'Import as my playlist', run: () => importLink(it.type === 'album' ? `https://music.youtube.com/browse/${it.id}` : `https://music.youtube.com/playlist?list=${it.id}`) },
     it.own ? null : { icon: 'share', label: 'Share', run: () => share(it.type === 'album' && it.playlistId ? `https://music.youtube.com/playlist?list=${it.playlistId}` : it.type === 'album' ? `https://music.youtube.com/browse/${it.id}` : `https://music.youtube.com/playlist?list=${it.id}`) },
   ];
@@ -2030,6 +2046,160 @@ async function movePlaylistTrack(id, from, to) {
   tracks.splice(to, 0, t);
   try { setUser(await api('playlists/' + id, 'PUT', { tracks })); } catch (e) { toast(e.message); }
   route(true);
+}
+
+/* =========================================================================
+   downloads: songs kept on this device, to play without the server
+   ========================================================================= */
+const DL_CACHE = 'gundil-downloads-v1';
+const dl = {
+  list: local.get('downloads', {}), // videoId -> { track, size, img, at }
+  urls: new Map(), // videoId -> blob: URL of the downloaded copy
+  queue: [], running: false, done: 0, total: 0,
+};
+const dlThumbs = new Map(); // a downloaded song's art URL -> its copy on this device
+for (const [id, d] of Object.entries(dl.list)) if (d.img && d.track.thumb) dlThumbs.set(d.track.thumb, '/_dl/img/' + id);
+const isDownloaded = id => !!dl.list[id];
+const dlCount = () => Object.keys(dl.list).length;
+const srcFor = id => dl.urls.get(id) || streamSrc(id);
+function saveDl() { local.set('downloads', dl.list); }
+function dlBytes() { return Object.values(dl.list).reduce((n, d) => n + (d.size || 0), 0); }
+const mb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(0.1, n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + ' MB';
+
+/* The downloaded copy as a URL the player can open. */
+async function dlUrl(id) {
+  if (dl.urls.has(id)) return dl.urls.get(id);
+  const res = await (await caches.open(DL_CACHE)).match('/_dl/audio/' + id);
+  if (!res) { delete dl.list[id]; saveDl(); return null; } // cleared by the browser
+  const u = URL.createObjectURL(await res.blob());
+  dl.urls.set(id, u);
+  return u;
+}
+
+/* Downloads songs one after another, with a running count. */
+function download(tracks) {
+  if (!('caches' in window)) return toast('This browser can\'t keep songs for offline');
+  const add = tracks.filter(t => isTrack(t) && t.available !== false && !isDownloaded(t.videoId) && !dl.queue.some(q => q.videoId === t.videoId)).map(slim);
+  if (!add.length) return toast(tracks.length > 1 ? 'Already downloaded' : 'Already downloaded');
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  dl.queue.push(...add);
+  dl.total += add.length;
+  toast(add.length > 1 ? `Downloading ${add.length} songs…` : `Downloading “${add[0].title}”…`);
+  if (!dl.running) runDownloads();
+}
+
+async function runDownloads() {
+  dl.running = true;
+  let failed = 0;
+  while (dl.queue.length) {
+    const t = dl.queue[0];
+    try { await fetchDownload(t); dl.done++; } catch (e) { failed++; console.warn('download', t.title, e); }
+    dl.queue.shift();
+    renderDownloadMarks(t.videoId);
+    if (dl.total > 1 && dl.queue.length) toast(`Downloaded ${dl.done} of ${dl.total}…`);
+  }
+  const done = dl.done;
+  dl.running = false; dl.done = 0; dl.total = 0;
+  if (failed) toast(`${plural(done, 'song')} downloaded; ${failed} couldn't be`, { label: 'Downloads', run: () => { location.hash = '#/library/downloads'; } });
+  else toast(done > 1 ? `${plural(done, 'song')} downloaded` : 'Downloaded', { label: 'Downloads', run: () => { location.hash = '#/library/downloads'; } });
+  if (location.hash.startsWith('#/library/downloads')) route(true);
+}
+
+async function fetchDownload(t) {
+  const res = await fetch(`/api/stream/${t.videoId}?q=${audioQuality()}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  const blob = await res.blob();
+  if (blob.size < 10000) throw new Error('not audio');
+  const cache = await caches.open(DL_CACHE);
+  await cache.put('/_dl/audio/' + t.videoId, new Response(blob, { headers: { 'Content-Type': blob.type || res.headers.get('Content-Type') || 'audio/mp4' } }));
+  let pic = false;
+  if (t.thumb) {
+    try { // the cover, for when there is no connection (some image hosts don't allow reading it)
+      const r = await fetch(sized(t.thumb, 226), { mode: 'cors', referrerPolicy: 'no-referrer' });
+      if (r.ok) { await cache.put('/_dl/img/' + t.videoId, new Response(await r.blob(), { headers: { 'Content-Type': r.headers.get('Content-Type') || 'image/jpeg' } })); pic = true; }
+    } catch { /* keep the online cover */ }
+  }
+  dl.list[t.videoId] = { track: t, size: blob.size, img: pic, at: Date.now() };
+  if (pic) dlThumbs.set(t.thumb, '/_dl/img/' + t.videoId);
+  saveDl();
+}
+
+async function removeDownloads(ids) {
+  const cache = await caches.open(DL_CACHE);
+  for (const id of ids) {
+    const d = dl.list[id];
+    if (!d) continue;
+    await cache.delete('/_dl/audio/' + id);
+    await cache.delete('/_dl/img/' + id);
+    if (d.track.thumb) dlThumbs.delete(d.track.thumb);
+    const u = dl.urls.get(id);
+    if (u && audio.getAttribute('src') !== u) { URL.revokeObjectURL(u); dl.urls.delete(id); }
+    delete dl.list[id];
+  }
+  saveDl();
+  for (const id of ids) renderDownloadMarks(id);
+}
+
+/* Updates the ✓ marks on rows of a song after its download state changed. */
+function renderDownloadMarks(id) {
+  for (const row of $$(`.row[data-vid="${id}"] .row-title`)) {
+    const m = $('.dl-mark', row);
+    if (isDownloaded(id) && !m) row.insertAdjacentHTML('beforeend', `<span class="dl-mark" title="Downloaded">${icon('downloadDone')}</span>`);
+    else if (!isDownloaded(id) && m) m.remove();
+  }
+  for (const b of $$('[data-act="list-download"]')) {
+    const l = reg.get(b.dataset.list);
+    if (!l) continue;
+    const all = l.tracks.length && l.tracks.every(t => isDownloaded(t.videoId));
+    b.innerHTML = icon(all ? 'downloadDone' : 'download');
+    b.title = b.ariaLabel = all ? 'Downloaded' : 'Download';
+    b.setAttribute('aria-label', b.title);
+  }
+}
+const dlMark = t => isDownloaded(t.videoId) ? `<span class="dl-mark" title="Downloaded">${icon('downloadDone')}</span>` : '';
+const dlButton = list => {
+  const l = reg.get(list);
+  const all = l && l.tracks.length && l.tracks.every(t => isDownloaded(t.videoId));
+  return `<button class="circle-btn lg" data-act="list-download" data-list="${list}" aria-label="${all ? 'Downloaded' : 'Download'}" title="${all ? 'Downloaded' : 'Download'}">${icon(all ? 'downloadDone' : 'download')}</button>`;
+};
+
+/* The Downloads tab (and all of the app when offline). */
+function downloadsView() {
+  const items = Object.values(dl.list).sort((a, b) => b.at - a.at).map(d => d.track);
+  const list = register({ tracks: items, source: 'Downloads', mode: 'list' });
+  const head = S.offline
+    ? `<div class="banner warn">${icon('offline')}<div><b>You're offline.</b> Can't reach the Gundil Music server, so only downloaded songs play. <button class="btn small" onclick="location.reload()">Try again</button></div></div>`
+    : '';
+  if (!items.length) return head + emptyHTML('download', 'No downloads yet', 'Download songs, albums and playlists to play them without a connection: use ⋮ → Download, or the download button on an album or playlist.');
+  return `${head}<div class="section-head"><h2>${plural(items.length, 'song')} · ${mb(dlBytes())}</h2>
+      <div class="dl-actions"><button class="btn small" data-act="list-shuffle" data-list="${list}">${icon('shuffle')}Shuffle</button><button class="btn white small" data-act="list-play" data-list="${list}">${icon('play')}Play</button>${S.offline ? '' : '<button class="btn small" data-act="dl-clear">Remove all</button>'}</div></div>
+    <div class="list">${items.map((t, i) => songRow(t, list, i, { albumCol: !mobile() })).join('')}</div>`;
+}
+
+/* No server: play what's downloaded. */
+function startOffline() {
+  S.offline = true;
+  S.info = { youtube: {}, hostname: '' };
+  S.server = null;
+  S.output = 'local';
+  setUser({ playlists: [], liked: [], disliked: [], saved: [], history: [], searches: [] });
+  const saved = local.get('queue', null);
+  if (saved && Array.isArray(saved.tracks)) {
+    S.queue = saved.tracks.filter(t => isTrack(t) && isDownloaded(t.videoId));
+    S.index = 0;
+    S.playing = false; S.paused = true;
+  }
+  audio.volume = Math.min(1, S.volume / 100);
+  renderGuide();
+  renderPlayer();
+  if (location.hash !== '#/library/downloads') location.hash = '#/library/downloads'; else route();
+  // Back online? Offer to reload.
+  const ping = setInterval(async () => {
+    try {
+      const r = await fetch('/api/info', { cache: 'no-store' });
+      if (r.ok) { clearInterval(ping); toast('Connected to the server again', { label: 'Reload', run: () => location.reload() }); }
+    } catch { /* still offline */ }
+  }, 30000);
 }
 
 /* =========================================================================
@@ -2364,6 +2534,7 @@ function renderSettings(d) {
     ${setRow('Audio quality', 'Lower quality uses less mobile data', `<select data-set="quality">${options(QUALITY, audioQuality())}</select>`)}
     ${setRow('Video quality', 'For the Video side of the Song / Video switch', `<select data-set="videoQuality">${options(VIDEO_QUALITY, local.get('videoQuality', 'auto'))}</select>`)}
     ${setRow('Autoplay', 'Keep playing similar songs when the queue ends', switchBtn('autoplay', S.autoplay))}
+    ${setRow('Downloads', dlCount() ? `${plural(dlCount(), 'song')} on this device, ${mb(dlBytes())}` : 'Songs you download play without a connection', `<a class="btn small" href="#/library/downloads">Open</a>`)}
     ${setRow('Crossfade', 'Fade each song into the next. Not in Video mode or on the server\'s speaker', `<select data-set="crossfade">${options(CROSSFADE, String(crossfadeSecs()))}</select>`)}
     ${google}
     ${people}
@@ -2611,6 +2782,16 @@ document.addEventListener('click', async e => {
         if (innerWidth >= 1150) { $('#app').classList.toggle('mini'); } else { $('#app').classList.toggle('guide-forced'); }
         return;
       case 'import-playlist': return void importDialog();
+      case 'list-download': {
+        const l = reg.get(actEl.dataset.list);
+        if (!l || !l.tracks.length) return;
+        if (l.tracks.every(t => isDownloaded(t.videoId))) return void toast('All downloaded. To remove them, use Library → Downloads');
+        return void download(l.tracks);
+      }
+      case 'dl-clear': {
+        if (!actEl.dataset.sure) { actEl.dataset.sure = '1'; actEl.textContent = 'Tap again to remove all'; return; }
+        return void removeDownloads(Object.keys(dl.list)).then(() => { toast('Downloads removed'); route(true); });
+      }
       case 'avatar-menu':
         return void showMenu([
           S.session.user ? { icon: 'account', label: S.session.user.name + (S.session.user.admin ? ' (admin)' : ''), run: settingsDialog } : null,
@@ -2855,6 +3036,7 @@ async function init() {
     S.server = server;
     setUser(user);
   } catch (e) {
+    if (dlCount()) return startOffline(); // no server: play the downloads
     $('#view').innerHTML = emptyHTML('info', 'Can\'t reach the music server', esc(e.message), '<button class="btn" onclick="location.reload()">Try again</button>');
     return;
   }
