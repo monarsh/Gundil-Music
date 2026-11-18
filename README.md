@@ -12,7 +12,7 @@ What you get, laid out like YouTube Music:
 - **Explore**: new releases, charts by country, moods & genres
 - **Search** with suggestions, a top result, and Songs / Videos / Albums / Artists / Playlists filters
 - **Album, artist and playlist pages** with Play, Shuffle, Mix and Save
-- **Player** with Up next (autoplay radio keeps the music going), synced Lyrics and Related
+- **Player** with Up next (autoplay radio keeps the music going), Lyrics that follow the song (with a full-screen view) and Related
 - **Song / Video switch**: watch the music video in step with the song, full screen if you like
 - **Drag to reorder** Up next and your playlists, and a **sleep timer**
 - **Settings**: audio and video quality, region and language, daily YouTube updates, clearing history
@@ -237,6 +237,20 @@ server (`google-cookies.txt` in that person's folder, readable only by the
 server's user) and give access to that Google account, so link only on a server
 you trust. **Unlink** removes them. If YouTube signs the cookies out later,
 Settings says so: link again with a fresh export.
+
+## Lyrics
+
+The Lyrics tab follows the song when timings are known: the current line lights
+up, and the lyrics scroll to keep it in the middle. Dots fill in during the intro
+and instrumental breaks, and tapping a line jumps there. Scroll by hand to read
+ahead: following pauses until you tap **Back to current line**, or for a few seconds.
+The ⛶ button shows them full screen.
+
+Timings come from YouTube Music. When it only has plain lyrics, or none, the
+server asks [LRCLIB](https://lrclib.net), a free open database of timed lyrics. It
+only uses lyrics for a song of the same length (within 3 seconds), so a live or
+extended version's timings aren't used for the original. That lookup sends the
+song's title, artist, album and length to lrclib.net, nothing else.
 
 ## Security
 

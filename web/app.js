@@ -67,6 +67,7 @@ const ICONS = {
   timer: 'M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.96 8.96 0 0012 4a9 9 0 109 9c0-2.12-.74-4.07-1.97-5.61zM12 20a7 7 0 110-14 7 7 0 010 14z',
   settings: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 110-7.2 3.6 3.6 0 010 7.2z',
   fullscreen: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
+  lyricsFs: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
   fullscreenExit: 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z',
   refresh: 'M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z',
 };
@@ -931,6 +932,7 @@ window.gundilControl = cmd => {
 };
 window.gundilBack = () => {
   if ($('#pp-art').classList.contains('fs')) { setFullscreen(false); return true; }
+  if ($('#pp-body').classList.contains('lyrics-fs')) { setLyricsFullscreen(false); return true; }
   if (!$('#menu').hidden) { hideMenu(); return true; }
   if ($('dialog[open]')) { $('dialog[open]').close(); return true; }
   if ($('#app').classList.contains('searching')) { $('#app').classList.remove('searching'); closeSuggest(); return true; }
@@ -959,6 +961,7 @@ function openPlayer(tab) {
 }
 function closePlayer() {
   if (!S.ppOpen) return;
+  setLyricsFullscreen(false);
   S.ppOpen = false;
   $('#pp').hidden = true;
   $('#pp').classList.remove('sheet');
@@ -971,6 +974,7 @@ function setPPTab(tab) {
     if (pp.classList.contains('sheet') && S.ppTab === tab) { pp.classList.remove('sheet'); return; }
     pp.classList.add('sheet');
   }
+  if (tab !== 'lyrics') setLyricsFullscreen(false);
   S.ppTab = tab;
   renderPPTab();
 }
@@ -1000,16 +1004,21 @@ async function renderPPTab() {
     const w = await yt('watch', { videoId: vid });
     if (!current() || current().videoId !== vid || S.ppTab !== tab) return;
     if (tab === 'lyrics') {
-      if (!w.lyrics) { body.innerHTML = emptyHTML('lyrics', 'Lyrics not available', ''); return; }
-      const ly = await yt('lyrics', { id: w.lyrics });
+      const ly = await lyricsOf(t, w.lyrics);
       if (!current() || current().videoId !== vid || S.ppTab !== tab) return;
+      const tools = `<div class="ly-tools"><button class="icon-btn" data-act="lyrics-fs" aria-label="Full-screen lyrics" title="Full-screen lyrics">${icon('lyricsFs')}</button></div>`;
       if (ly.lines && ly.lines.length) {
-        body.innerHTML = `<div class="lyrics">${ly.lines.map((l, i) => `<div class="ln" data-i="${i}" data-start="${l.start}" data-act="lyric-seek">${esc(l.text) || '♪'}</div>`).join('')}</div>
-          ${ly.source ? `<div class="lyrics-src">${esc(ly.source)}</div>` : ''}`;
+        body.innerHTML = `${tools}<div class="lyrics timed">${lyricItems(ly.lines).map(l => l.gap
+          ? `<div class="ln gap" data-start="${l.start}" data-end="${l.end}" data-act="lyric-seek"><i></i><i></i><i></i></div>`
+          : `<div class="ln" data-start="${l.start}" data-act="lyric-seek">${esc(l.text)}</div>`).join('')}</div>
+          ${ly.source ? `<div class="lyrics-src">${esc(ly.source)}</div>` : ''}
+          <button class="btn white ly-back" data-act="lyrics-back" hidden>${icon('down')}Back to current line</button>`;
         body.dataset.line = '';
-        syncLyrics();
+        lyricHold = 0;
+        if (body.classList.contains('lyrics-fs')) body.style.setProperty('--ly-art', t.thumb ? `url("${sized(t.thumb, 120)}")` : 'none');
+        syncLyrics(true);
       } else if (ly.text) {
-        body.innerHTML = `<div class="lyrics plain">${esc(ly.text)}</div>${ly.source ? `<div class="lyrics-src">${esc(ly.source)}</div>` : ''}`;
+        body.innerHTML = `${tools}<div class="lyrics plain">${esc(ly.text)}</div>${ly.source ? `<div class="lyrics-src">${esc(ly.source)}</div>` : ''}`;
       } else body.innerHTML = emptyHTML('lyrics', 'Lyrics not available', '');
     } else {
       if (!w.related) { body.innerHTML = emptyHTML('info', 'Nothing related found', ''); return; }
@@ -1024,17 +1033,86 @@ async function renderPPTab() {
   }
 }
 
-function syncLyrics() {
-  const body = $('#pp-body');
-  const lines = $$('.lyrics .ln', body);
-  if (!lines.length) return;
-  let on = -1;
-  for (let i = 0; i < lines.length; i++) if (+lines[i].dataset.start <= S.position + 0.3) on = i;
-  if (body.dataset.line === String(on)) return;
-  body.dataset.line = on;
-  lines.forEach((l, i) => { l.classList.toggle('on', i === on); l.classList.toggle('past', i < on); });
-  if (on >= 0) lines[on].scrollIntoView({ block: 'center', behavior: 'smooth' });
+/* Lyrics for a track: YouTube Music's, or timed ones from LRCLIB (looked up by the server). */
+const lyricsMemo = new Map();
+function lyricsOf(t, id) {
+  if (lyricsMemo.has(t.videoId)) return lyricsMemo.get(t.videoId);
+  const q = new URLSearchParams({ id: id || '', title: t.title || '', artist: (t.artists && t.artists[0] && t.artists[0].name) || '', album: (t.album && t.album.name) || '', duration: t.duration || '' });
+  const p = api('lyrics?' + q);
+  lyricsMemo.set(t.videoId, p);
+  p.catch(() => lyricsMemo.delete(t.videoId));
+  if (lyricsMemo.size > 50) lyricsMemo.delete(lyricsMemo.keys().next().value);
+  return p;
 }
+
+/* Timed lines, with "♪ ♪ ♪" gaps for the intro, instrumental breaks and empty lines. */
+function lyricItems(lines) {
+  const out = [];
+  if (lines[0].start > 5) out.push({ gap: true, start: 0, end: lines[0].start });
+  lines.forEach((l, i) => {
+    const next = lines[i + 1];
+    const text = (l.text || '').trim();
+    const end = next ? next.start : (l.end || l.start + 5);
+    if (!text || /^[♪♫\s]+$/.test(text)) {
+      if (end - l.start > 2.5) out.push({ gap: true, start: l.start, end });
+      return;
+    }
+    out.push({ start: l.start, text });
+    // A line with a known end, followed by a long silence before the next one.
+    if (next && l.end && next.start - l.end > 6) out.push({ gap: true, start: l.end, end: next.start });
+  });
+  return out;
+}
+
+const LYRIC_LEAD = 0.35; // light a line up as it's sung, not just after
+let lyricHold = 0; // following pauses until then, after scrolling by hand
+
+function syncLyrics(force) {
+  const body = $('#pp-body');
+  const lines = $$('.lyrics.timed .ln', body);
+  if (!lines.length) return;
+  const pos = S.position + LYRIC_LEAD;
+  let on = -1;
+  for (let i = 0; i < lines.length; i++) if (+lines[i].dataset.start <= pos) on = i;
+  const cur = lines[on];
+  if (cur && cur.classList.contains('gap')) {
+    const st = +cur.dataset.start, en = +cur.dataset.end;
+    cur.dataset.n = Math.min(3, Math.floor((pos - st) / Math.max(0.1, en - st) * 3) + 1);
+  }
+  const held = Date.now() < lyricHold;
+  const back = $('.ly-back', body);
+  if (back && back.hidden === held) back.hidden = !held;
+  if (!held && lyricHold) { lyricHold = 0; force = true; } // the pause just ended: catch up
+  if (!force && body.dataset.line === String(on)) return;
+  body.dataset.line = on;
+  lines.forEach((l, i) => { l.classList.toggle('on', i === on); l.classList.toggle('past', i < on); if (i !== on) delete l.dataset.n; });
+  if (on >= 0 && !held) lines[on].scrollIntoView({ block: 'center', behavior: force ? 'auto' : 'smooth' });
+}
+
+/* Scrolling the lyrics by hand pauses following for a few seconds. */
+function holdLyrics() {
+  if (S.ppTab !== 'lyrics' || !$('.lyrics.timed', $('#pp-body'))) return;
+  lyricHold = Date.now() + 6000;
+  syncLyrics();
+}
+for (const ev of ['wheel', 'touchmove']) $('#pp-body').addEventListener(ev, holdLyrics, { passive: true });
+$('#pp-body').addEventListener('keydown', e => { if (/^(Arrow|Page|Home|End)/.test(e.key)) holdLyrics(); });
+
+function setLyricsFullscreen(on) {
+  const body = $('#pp-body');
+  if (on === body.classList.contains('lyrics-fs')) return;
+  body.classList.toggle('lyrics-fs', on);
+  const b = $('[data-act="lyrics-fs"]', body);
+  if (b) { b.innerHTML = icon(on ? 'fullscreenExit' : 'lyricsFs'); b.setAttribute('aria-label', on ? 'Exit full screen' : 'Full-screen lyrics'); }
+  if (on) { const t = current(); body.style.setProperty('--ly-art', t && t.thumb ? `url("${sized(t.thumb, 120)}")` : 'none'); }
+  try {
+    if (on && body.requestFullscreen && document.fullscreenEnabled) body.requestFullscreen().catch(() => {});
+    else if (!on && document.fullscreenElement === body) document.exitFullscreen().catch(() => {});
+  } catch { /* the page-filling view is enough */ }
+  lyricHold = 0;
+  syncLyrics(true);
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && $('#pp-body').classList.contains('lyrics-fs')) setLyricsFullscreen(false); });
 
 function upNextHTML() {
   const start = Math.max(0, S.index - 50), end = Math.min(S.queue.length, S.index + 250);
@@ -2387,7 +2465,9 @@ document.addEventListener('click', async e => {
       case 'video-tap': return void ($('#pp-art').classList.contains('fs') ? toggle() : null);
       case 'save-queue': return void newPlaylistDialog(S.queue);
       case 'q-remove': return void removeFromQueue(+row.dataset.q);
-      case 'lyric-seek': return void seek(+actEl.dataset.start);
+      case 'lyric-seek': lyricHold = 0; return void seek(+actEl.dataset.start);
+      case 'lyrics-fs': return void setLyricsFullscreen(!$('#pp-body').classList.contains('lyrics-fs'));
+      case 'lyrics-back': lyricHold = 0; return void syncLyrics(true);
       case 'cast': return void openCast();
       case 'cast-close': return void $('#cast-dlg').close();
       case 'output': await setOutput(actEl.dataset.out); return void refreshCast();
@@ -2565,6 +2645,7 @@ document.addEventListener('keydown', e => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range';
   if (e.key === 'Escape') {
     if ($('#pp-art').classList.contains('fs')) setFullscreen(false);
+    else if ($('#pp-body').classList.contains('lyrics-fs')) setLyricsFullscreen(false);
     else if (!$('#menu').hidden) hideMenu();
     else if (S.ppOpen && !$('dialog[open]')) closePlayer();
     return;

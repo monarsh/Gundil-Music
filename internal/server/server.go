@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/info", s.info)
 	mux.HandleFunc("GET /api/yt/{method}", s.ytCall)
+	mux.HandleFunc("GET /api/lyrics", s.lyricsFor)
 	mux.HandleFunc("POST /api/youtube/update", func(w http.ResponseWriter, r *http.Request) {
 		if !s.requireAdmin(w, r) {
 			return
