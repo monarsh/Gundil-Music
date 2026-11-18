@@ -88,8 +88,23 @@ public class PlaybackService extends Service {
     }
 
     private void control(String cmd) {
-        MainActivity a = MainActivity.instance;
-        if (a != null) a.control(cmd);
+        MainActivity.control(cmd); // works with or without the app's screen open
+    }
+
+    /** Whether this phone itself is playing music right now. */
+    static boolean playingHere() {
+        PlaybackService s = instance;
+        return s != null && s.playing && s.local;
+    }
+
+    /** The app was swiped away from Recents. Keep going only while music plays here. */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        if (!playingHere()) {
+            WebHolder.ui.post(WebHolder::destroy);
+            stopSelf();
+        }
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override

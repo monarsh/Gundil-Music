@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs inside an Android emulator job: installs the debug APK, connects it to
 # a Gundil Music test server on the host (10.0.2.2), plays a song, then
-# minimises the app and turns the screen off, checking the app survives and
-# keeps playing. Logs and screenshots go to android/e2e/out.
+# minimises the app, turns the screen off and swipes it away from Recents,
+# checking it keeps playing throughout. Logs and screenshots go to android/e2e/out.
 set -uo pipefail
 cd "$(dirname "$0")"
 out=out
@@ -55,6 +55,35 @@ sleep 2
 adb shell cmd statusbar expand-notifications 2>/dev/null || true
 sleep 2
 shot 3-notification
+
+echo "== swipe the app away from Recents (music must keep playing)"
+adb shell input keyevent KEYCODE_BACK # close the notification shade
+adb shell am start -n "$pkg/.MainActivity"
+sleep 5
+forward; node drive.js check || { echo "::error::not playing before the swipe"; fail=1; }
+adb shell input keyevent KEYCODE_APP_SWITCH
+sleep 4
+shot 4-recents
+size=$(adb shell wm size | tr -d '\r' | grep -o '[0-9]*x[0-9]*' | tail -1)
+w=${size%x*}; h=${size#*x}
+adb shell input swipe $((w / 2)) $((h / 2)) $((w / 2)) $((h / 12)) 300
+sleep 4
+adb shell input keyevent KEYCODE_HOME
+sleep 4
+if adb shell dumpsys activity activities | tr -d '\r' | grep -q "$pkg/.MainActivity"; then
+  echo "::warning::the swipe didn't remove the app from Recents; the test can't check this step"
+  adb shell dumpsys activity recents > "$out/recents.txt" 2>&1 || true
+else
+  echo "app's screen is gone (swiped away)"
+  alive && echo "app process alive after the swipe" || { echo "::error::the app was killed when swiped away"; fail=1; }
+  forward; node drive.js check && echo "still playing after the swipe" || { echo "::error::music stopped when the app was swiped away"; fail=1; }
+  shot 5-after-swipe
+  echo "== open the app again: the same page, still playing"
+  adb shell am start -n "$pkg/.MainActivity"
+  sleep 5
+  shot 6-reopened
+  forward; node drive.js check && echo "reopened on the playing page" || { echo "::error::reopening the app lost the music"; fail=1; }
+fi
 
 adb shell dumpsys activity services "$pkg" > "$out/services.txt" 2>&1 || true
 adb logcat -d > "$out/logcat.txt"

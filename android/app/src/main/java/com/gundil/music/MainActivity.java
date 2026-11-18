@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.MutableContextWrapper;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -57,20 +58,25 @@ public class MainActivity extends Activity {
     static final int PORT = 8338;
     private static final String SETUP_URL = "file:///android_asset/setup.html";
 
+    /** The open screen, if any (music can play with none: see WebHolder). */
     static MainActivity instance;
+    private static final ExecutorService pool = Executors.newCachedThreadPool();
+    private static boolean authAsked;
 
     private WebView web;
     private SharedPreferences prefs;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final ExecutorService pool = Executors.newCachedThreadPool();
-    private boolean authAsked;
+
+    static SharedPreferences prefs(Context c) {
+        return c.getApplicationContext().getSharedPreferences("gundil", MODE_PRIVATE);
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         instance = this;
-        prefs = getSharedPreferences("gundil", MODE_PRIVATE);
+        prefs = prefs(this);
 
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true); // debug builds only, for automated tests
@@ -79,70 +85,28 @@ public class MainActivity extends Activity {
         String given = getIntent() != null ? getIntent().getStringExtra("server") : null;
         if (given != null && !normalize(given).isEmpty()) prefs.edit().putString("server", normalize(given)).apply();
 
-        web = new KeepPlayingWebView(this);
-        web.setBackgroundColor(Color.parseColor("#030303"));
+        boolean reuse = WebHolder.web != null;
+        if (reuse) {
+            // Music kept playing after the app was swiped away: show the same page.
+            web = WebHolder.web;
+            WebHolder.detach();
+            WebHolder.context.setBaseContext(this);
+        } else {
+            WebHolder.context = new MutableContextWrapper(this);
+            web = new KeepPlayingWebView(WebHolder.context);
+            WebHolder.web = web;
+            setUp(web, getApplicationContext());
+        }
         web.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(web);
-
-        WebSettings ws = web.getSettings();
-        ws.setJavaScriptEnabled(true);
-        ws.setDomStorageEnabled(true);
-        ws.setMediaPlaybackRequiresUserGesture(false);
-        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        ws.setUserAgentString(ws.getUserAgentString() + " GundilMusicAndroid/" + BuildConfigVersion.name(this));
-        web.addJavascriptInterface(new Bridge(), "GundilAndroid");
-        web.setWebChromeClient(new WebChromeClient());
-        web.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
-                Uri u = req.getUrl();
-                String server = prefs.getString("server", "");
-                if (u.getScheme() != null && u.getScheme().startsWith("http") && !server.isEmpty() && u.toString().startsWith(server)) {
-                    return false;
-                }
-                if ("file".equals(u.getScheme())) return false;
-                // Links that leave the server (e.g. "Share" links) open in the browser.
-                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
-                return true;
-            }
-
-            @Override
-            public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
-                String user = prefs.getString("user", ""), pass = prefs.getString("pass", "");
-                if (!authAsked && !user.isEmpty()) {
-                    authAsked = true;
-                    handler.proceed(user, pass);
-                    return;
-                }
-                askLogin(handler);
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                if (url.startsWith("http")) authAsked = false;
-            }
-
-            @Override
-            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
-                // The page's renderer crashed or was killed: start over instead of letting Android close the app.
-                android.util.Log.w("GundilMusic", "WebView renderer gone (crash=" + detail.didCrash() + "), reloading");
-                recreate();
-                return true;
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
-                if (req.isForMainFrame() && !req.getUrl().toString().startsWith("file:")) {
-                    showSetup("Can't reach " + prefs.getString("server", "the server") + ". Check that it is running and that this phone is on the same network.");
-                }
-            }
-        });
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
 
-        if (state != null) {
+        if (reuse) {
+            // Already showing the app.
+        } else if (state != null) {
             web.restoreState(state);
         } else {
             String server = prefs.getString("server", "");
@@ -176,10 +140,91 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (instance == this) instance = null;
-        stopService(new Intent(this, PlaybackService.class));
-        web.destroy();
-        pool.shutdownNow();
+        if (WebHolder.web != null && (isChangingConfigurations() || PlaybackService.playingHere())) {
+            // Swiped away from Recents (or rotated) while music plays on this
+            // phone: keep the page and the music going without a screen.
+            WebHolder.detach();
+        } else {
+            stopService(new Intent(this, PlaybackService.class));
+            WebHolder.destroy();
+        }
         super.onDestroy();
+    }
+
+    /** Sets up a new WebView: settings, the page's bridge and its client. */
+    @SuppressLint("SetJavaScriptEnabled")
+    private static void setUp(WebView web, Context app) {
+        web.setBackgroundColor(Color.parseColor("#030303"));
+        WebSettings ws = web.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setMediaPlaybackRequiresUserGesture(false);
+        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        ws.setUserAgentString(ws.getUserAgentString() + " GundilMusicAndroid/" + BuildConfigVersion.name(app));
+        if (Build.VERSION.SDK_INT >= 26) {
+            // Keep the page's renderer as important as the app, even without a screen.
+            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
+        web.addJavascriptInterface(new Bridge(app), "GundilAndroid");
+        web.setWebChromeClient(new WebChromeClient());
+        web.setWebViewClient(new Client(app));
+    }
+
+    /** Handles the page's links, sign-in prompts and errors. Holds no screen. */
+    static final class Client extends WebViewClient {
+        private final Context app;
+
+        Client(Context app) { this.app = app; }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+            Uri u = req.getUrl();
+            String server = prefs(app).getString("server", "");
+            if (u.getScheme() != null && u.getScheme().startsWith("http") && !server.isEmpty() && u.toString().startsWith(server)) {
+                return false;
+            }
+            if ("file".equals(u.getScheme())) return false;
+            // Links that leave the server (e.g. "Share" links) open in the browser.
+            try { app.startActivity(new Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); } catch (Exception ignored) { }
+            return true;
+        }
+
+        @Override
+        public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+            SharedPreferences prefs = prefs(app);
+            String user = prefs.getString("user", ""), pass = prefs.getString("pass", "");
+            if (!authAsked && !user.isEmpty()) {
+                authAsked = true;
+                handler.proceed(user, pass);
+                return;
+            }
+            MainActivity a = instance;
+            if (a != null) a.askLogin(handler);
+            else handler.cancel();
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            if (url.startsWith("http")) authAsked = false;
+        }
+
+        @Override
+        public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+            // The page's renderer crashed or was killed: start over instead of letting Android close the app.
+            android.util.Log.w("GundilMusic", "WebView renderer gone (crash=" + detail.didCrash() + "), reloading");
+            WebHolder.destroy();
+            MainActivity a = instance;
+            if (a != null) a.recreate();
+            else app.stopService(new Intent(app, PlaybackService.class));
+            return true;
+        }
+
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
+            if (req.isForMainFrame() && !req.getUrl().toString().startsWith("file:")) {
+                showSetup("Can't reach " + prefs(app).getString("server", "the server") + ". Check that it is running and that this phone is on the same network.");
+            }
+        }
     }
 
     @Override
@@ -192,9 +237,9 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void showSetup(String error) {
+    static void showSetup(String error) {
         String url = SETUP_URL + (error != null ? "#error=" + Uri.encode(error) : "");
-        web.loadUrl(url);
+        if (WebHolder.web != null) WebHolder.web.loadUrl(url);
     }
 
     private void askLogin(HttpAuthHandler handler) {
@@ -227,8 +272,8 @@ public class MainActivity extends Activity {
     }
 
     /** Runs a command in the web app, e.g. from the notification or headset buttons. */
-    void control(String cmd) {
-        ui.post(() -> web.evaluateJavascript("window.gundilControl && window.gundilControl('" + cmd + "')", null));
+    static void control(String cmd) {
+        WebHolder.js("window.gundilControl && window.gundilControl('" + cmd + "')");
     }
 
     // ---------- talking to servers ----------
@@ -278,11 +323,11 @@ public class MainActivity extends Activity {
     }
 
     /** Finds Gundil Music servers on the local network (same /24 as this phone). */
-    List<JSONObject> scan() {
+    static List<JSONObject> scan(Context ctx) {
         List<JSONObject> found = Collections.synchronizedList(new ArrayList<>());
         String prefix = null;
         try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
             Network net = cm.getActiveNetwork();
             LinkProperties lp = net != null ? cm.getLinkProperties(net) : null;
             if (lp != null) {
@@ -316,11 +361,26 @@ public class MainActivity extends Activity {
     }
 
     private void js(String code) {
-        ui.post(() -> web.evaluateJavascript(code, null));
+        WebHolder.js(code);
     }
 
-    /** Methods the web pages can call as window.GundilAndroid.*. */
-    class Bridge {
+    /**
+     * Methods the web pages can call as window.GundilAndroid.*. It lives as
+     * long as the WebView, so it uses the application, not a screen.
+     */
+    static final class Bridge {
+        private final Context app;
+        private final SharedPreferences prefs;
+
+        Bridge(Context app) {
+            this.app = app;
+            this.prefs = prefs(app);
+        }
+
+        private static void js(String code) {
+            WebHolder.js(code);
+        }
+
         @JavascriptInterface
         public String server() {
             return prefs.getString("server", "");
@@ -330,7 +390,7 @@ public class MainActivity extends Activity {
         public void scan() {
             pool.execute(() -> {
                 JSONArray arr = new JSONArray();
-                for (JSONObject o : MainActivity.this.scan()) arr.put(o);
+                for (JSONObject o : MainActivity.scan(app)) arr.put(o);
                 js("window.onServers && window.onServers(" + arr + ")");
             });
         }
@@ -349,21 +409,22 @@ public class MainActivity extends Activity {
                     return;
                 }
                 prefs.edit().putString("server", base).apply();
-                ui.post(() -> {
-                    web.clearHistory();
-                    web.loadUrl(base + "/");
+                WebHolder.ui.post(() -> {
+                    if (WebHolder.web == null) return;
+                    WebHolder.web.clearHistory();
+                    WebHolder.web.loadUrl(base + "/");
                 });
             });
         }
 
         @JavascriptInterface
         public void changeServer() {
-            ui.post(() -> showSetup(null));
+            WebHolder.ui.post(() -> showSetup(null));
         }
 
         @JavascriptInterface
         public String version() {
-            return BuildConfigVersion.name(MainActivity.this);
+            return BuildConfigVersion.name(app);
         }
 
         /** The web app reports what is playing so the notification can show it. */
@@ -371,7 +432,7 @@ public class MainActivity extends Activity {
         public void update(String json) {
             try {
                 JSONObject o = new JSONObject(json);
-                Intent i = new Intent(MainActivity.this, PlaybackService.class);
+                Intent i = new Intent(app, PlaybackService.class);
                 i.setAction(PlaybackService.ACTION_UPDATE);
                 i.putExtra("title", o.optString("title"));
                 i.putExtra("artist", o.optString("artist"));
@@ -383,17 +444,17 @@ public class MainActivity extends Activity {
                 if (o.optBoolean("hasTrack")) {
                     PlaybackService svc = PlaybackService.instance;
                     if (svc != null) {
-                        ui.post(() -> svc.apply(i)); // already running: no new start needed
+                        WebHolder.ui.post(() -> svc.apply(i)); // already running: no new start needed
                     } else {
                         try {
-                            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-                            else startService(i);
+                            if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i);
+                            else app.startService(i);
                         } catch (RuntimeException ignored) {
                             // Not allowed from the background; the next update while visible starts it.
                         }
                     }
                 } else {
-                    stopService(new Intent(MainActivity.this, PlaybackService.class));
+                    app.stopService(new Intent(app, PlaybackService.class));
                 }
             } catch (Exception ignored) { }
         }

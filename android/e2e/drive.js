@@ -1,6 +1,6 @@
 // Drives the app's WebView over the Chrome DevTools protocol (adb-forwarded
 // to localhost:9222): plays a song, then reports playback state on demand.
-//   node drive.js play | node drive.js state
+//   node drive.js play | node drive.js state | node drive.js check (exit 2 unless playing)
 const mode = process.argv[2] || 'state';
 (async () => {
   // The WebView's debugging target can take a while to appear after launch.
@@ -30,6 +30,16 @@ const mode = process.argv[2] || 'state';
     console.log('page:', page.url);
     await ev(`document.querySelector('.qp-grid .row').click(); true`);
     await new Promise(r => setTimeout(r, 8000));
+  }
+  if (mode === 'check') {
+    // Is music still playing? The position moves on (or the next song started).
+    const a = JSON.parse(await state());
+    await new Promise(r => setTimeout(r, 5000));
+    const b = JSON.parse(await state());
+    console.log('check', JSON.stringify(a), '->', JSON.stringify(b));
+    ws.close();
+    if (b.paused || !(b.t > a.t || b.index !== a.index)) { console.error('not playing'); process.exit(2); }
+    return;
   }
   console.log(mode, await state());
   ws.close();
