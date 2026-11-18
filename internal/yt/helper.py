@@ -485,10 +485,20 @@ AUDIO_FORMATS = {
 }
 
 
-def video_format(height):
+VIDEO_CODECS = {"avc1": "[vcodec^=avc1][ext=mp4]", "vp9": "[vcodec^=vp9]", "av01": "[vcodec^=av01]"}
+
+
+def video_format(height, codecs=""):
+    """A video-only picture the device can play: only the codecs it says it
+    decodes (H.264 first: every phone has it in hardware), and only plain
+    https downloads, never HLS or DASH manifests a <video> can't open."""
     h = int(height) if str(height).isdigit() else 720
-    return (f"bestvideo[height<={h}][vcodec^=avc1][ext=mp4]/bestvideo[height<={h}][ext=mp4]/"
-            f"bestvideo[height<={h}][vcodec^=vp9]/bestvideo[height<={h}]/best[height<={h}]")
+    wanted = [c for c in (codecs or "avc1,vp9").split(",") if c in VIDEO_CODECS] or ["avc1"]
+    plain = "[protocol^=http][protocol!*=m3u8][protocol!*=dash]"
+    tries = [f"bestvideo[height<={h}]{VIDEO_CODECS[c]}{plain}" for c in wanted]
+    # Nothing small enough: the smallest that is, in a playable codec.
+    tries += [f"worstvideo{VIDEO_CODECS[c]}{plain}" for c in wanted]
+    return "/".join(tries)
 
 
 # Other YouTube players to ask when the usual ones get "confirm you're not a bot".
@@ -522,7 +532,7 @@ def m_stream(args):
     vid = args["videoId"]
     kind = args.get("kind") or "audio"
     if kind == "video":
-        fmt = video_format(args.get("height") or "720")
+        fmt = video_format(args.get("height") or "720", args.get("codecs") or "")
     else:
         fmt = AUDIO_FORMATS.get(args.get("quality") or "normal", AUDIO_FORMATS["normal"])
     url = "https://www.youtube.com/watch?v=" + vid
@@ -550,6 +560,7 @@ def m_stream(args):
         "expires": int(expire) if expire.isdigit() else 0, "duration": info.get("duration") or 0,
         "size": info.get("filesize") or info.get("filesize_approx") or 0,
         "height": info.get("height") or 0, "abr": info.get("abr") or 0,
+        "format": info.get("format_id") or "", "vcodec": info.get("vcodec") or "", "protocol": info.get("protocol") or "",
     }
 
 

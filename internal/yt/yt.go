@@ -32,6 +32,10 @@ type Stream struct {
 	Expires  int64             `json:"expires"`
 	Duration float64           `json:"duration"`
 	Size     int64             `json:"size"`
+	Format   string            `json:"format"`   // YouTube's format id, e.g. 135
+	VCodec   string            `json:"vcodec"`   // video codec, e.g. avc1.4d401e
+	Protocol string            `json:"protocol"` // https, m3u8_native...
+	Height   int               `json:"height"`
 }
 
 type reply struct {
@@ -425,6 +429,7 @@ type Format struct {
 	Kind    string // "audio" (default) or "video" (video only, no sound)
 	Quality string // audio: low, normal, high
 	Height  string // video: highest picture height, e.g. 720
+	Codecs  string // video: codecs the device can play, best first, e.g. "avc1,vp9"
 }
 
 func (f Format) args(videoID string) map[string]string {
@@ -432,6 +437,9 @@ func (f Format) args(videoID string) map[string]string {
 	if f.Kind == "video" {
 		a["kind"] = "video"
 		a["height"] = f.Height
+		if f.Codecs != "" {
+			a["codecs"] = f.Codecs
+		}
 	} else if f.Quality != "" && f.Quality != "normal" {
 		a["quality"] = f.Quality
 	}

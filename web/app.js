@@ -772,6 +772,17 @@ const video = $('#pp-video');
 const swapBack = new Map(); // music video id -> the song it stands in for
 let videoShown = false, lastFix = 0;
 const videoHeight = () => { const q = local.get('videoQuality', 'auto'); return q !== 'auto' ? q : mobile() ? '480' : '720'; };
+/* The video codecs this device can show, H.264 first (hardware-decoded on every phone). */
+const videoCodecs = (() => {
+  const v = document.createElement('video');
+  const ok = t => { try { return v.canPlayType(t) !== ''; } catch { return false; } };
+  const out = [];
+  if (ok('video/mp4; codecs="avc1.4d401e"')) out.push('avc1');
+  if (ok('video/webm; codecs="vp9"')) out.push('vp9');
+  if (ok('video/mp4; codecs="av01.0.05M.08"')) out.push('av01');
+  return (out.length ? out : ['avc1']).join(',');
+})();
+let videoSafe = ''; // after a failure: the video asked for again in the safest form
 
 function videoActive() {
   const t = current();
@@ -802,7 +813,9 @@ function syncVideo() {
     video.dataset.key = key;
     video.dataset.vid = t.videoId;
     showVideo(false);
-    video.src = `/api/stream/${t.videoId}?kind=video&h=${videoHeight()}`;
+    video.src = videoSafe === t.videoId
+      ? `/api/stream/${t.videoId}?kind=video&h=360&codecs=avc1`
+      : `/api/stream/${t.videoId}?kind=video&h=${videoHeight()}&codecs=${videoCodecs}`;
   }
   if (S.playing && !S.paused && !S.loading) {
     fixDrift(true);
@@ -824,10 +837,22 @@ function fixDrift(force) {
 video.addEventListener('loadedmetadata', () => { video.currentTime = audio.currentTime || 0; });
 video.addEventListener('playing', () => { if (videoActive()) showVideo(true); });
 video.addEventListener('error', () => {
-  if (!video.getAttribute('src')) return;
-  video.dataset.failed = video.dataset.vid;
+  const src = video.getAttribute('src');
+  if (!src) return;
+  const id = video.dataset.vid, e = video.error;
+  const why = e ? `${['', 'aborted', 'network', 'decode', 'not supported'][e.code] || e.code}${e.message ? ': ' + e.message : ''}` : 'unknown';
+  const q = new URLSearchParams(src.split('?')[1] || '');
+  fetch(`/api/video-error/${id}?error=${enc(why)}&codecs=${enc(q.get('codecs') || '')}&h=${enc(q.get('h') || '')}`, { method: 'POST' }).catch(() => {});
   video.removeAttribute('src');
+  video.dataset.key = '';
   showVideo(false);
+  if (videoSafe !== id) {
+    // Once more, in the form every device plays: H.264 at 360p.
+    videoSafe = id;
+    syncVideo();
+    return;
+  }
+  video.dataset.failed = id;
   toast('This video can\'t be shown here. The song keeps playing.');
 });
 document.addEventListener('visibilitychange', syncVideo);

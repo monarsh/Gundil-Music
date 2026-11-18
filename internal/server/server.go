@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +172,20 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, res)
 	})
 	mux.HandleFunc("GET /api/stream/{id}", s.stream)
+	mux.HandleFunc("POST /api/video-error/{id}", func(w http.ResponseWriter, r *http.Request) {
+		// A device couldn't show a video: note why, to tell what to fix.
+		q := r.URL.Query()
+		clip := func(v string) string {
+			return strings.Map(func(c rune) rune {
+				if c < ' ' {
+					return -1
+				}
+				return c
+			}, v[:min(len(v), 200)])
+		}
+		log.Printf("video %s didn't play on a device: %s (codecs %s, %sp, %s)", clip(r.PathValue("id")), clip(q.Get("error")), clip(q.Get("codecs")), clip(q.Get("h")), clip(r.UserAgent()))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("id"); model.ValidID(id) {
 			f := s.format(r)
@@ -484,6 +499,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 
+		if f.Kind == "video" && (clientRange == "" || strings.HasPrefix(clientRange, "bytes=0-")) {
+			log.Printf("video %s: format %s, %s, %dp, %s (device plays %s; YouTube answered %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, f.Codecs, resp.Status)
+		}
 		h := w.Header()
 		mime := st.Mime
 		if mime == "" {
@@ -528,13 +546,24 @@ func (s *Server) format(r *http.Request) yt.Format {
 		default:
 			h = "720"
 		}
-		return yt.Format{Kind: "video", Height: h}
+		return yt.Format{Kind: "video", Height: h, Codecs: videoCodecs(q.Get("codecs"))}
 	}
 	switch v := q.Get("q"); v {
 	case "low", "normal", "high":
 		return yt.Format{Quality: v}
 	}
 	return yt.Format{Quality: s.YT.AudioQuality()}
+}
+
+// videoCodecs keeps the known codec names of a device's list, in its order.
+func videoCodecs(list string) string {
+	var out []string
+	for _, c := range strings.Split(list, ",") {
+		if c = strings.TrimSpace(c); (c == "avc1" || c == "vp9" || c == "av01") && !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
