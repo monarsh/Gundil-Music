@@ -1,0 +1,3 @@
+Windows resources (icon, file details) for gundil-music.exe.
+After changing this file or gundil-music.ico, rebuild ../../rsrc_windows_amd64.syso from this folder:
+  x86_64-w64-mingw32-windres --preprocessor=cpp -O coff -i gundil-music.rc -o ../../rsrc_windows_amd64.syso

@@ -74,6 +74,11 @@ jobs:
           cat "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
           grep -qx 'Name=Gundil Music' "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
           ! grep -q 'X-AppImage-Version' "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
+          # ...and has its icon, at the top and in the standard icon folders.
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract > /dev/null)
+          for f in gundil-music.png .DirIcon usr/share/icons/hicolor/256x256/apps/gundil-music.png usr/share/icons/hicolor/48x48/apps/gundil-music.png usr/share/icons/hicolor/scalable/apps/gundil-music.svg; do
+            file -L "$RUNNER_TEMP/squashfs-root/$f" | grep -Eq 'PNG image|SVG' || { echo "::error::missing icon $f"; exit 1; }
+          done
           # The AppImage is read-only; updates must land in the data folder.
           APPIMAGE_EXTRACT_AND_RUN=1 "$app" -update-youtube -data "$RUNNER_TEMP/data"
           test -d "$RUNNER_TEMP/data/pylib"
@@ -119,6 +124,7 @@ jobs:
         run: ./scripts/package-windows.sh
       - name: Smoke test
         run: |
+          python scripts/check-exe-icon.py "build/Gundil Music/gundil-music.exe"
           cd "build/Gundil Music"
           ./gundil-music.exe -update-youtube -data "$RUNNER_TEMP/data"
           ./gundil-music.exe -open=false -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" > ../server.log 2>&1 &

@@ -101,6 +101,15 @@ playing on this computer's speaker carries on.
 - **To stop it**, use the avatar menu → **Quit Gundil Music**. It's shown only on
   the computer running it; other devices can't quit it.
 
+## Start-menu shortcut and icon
+
+The AppImage carries its name and icon for start-menu integration
+(AppImageLauncher, Gear Lever and the like): it shows as **Gundil Music** with
+the Gundil Music icon. If an older shortcut shows a version in its name or no
+icon, remove it and integrate the new AppImage again. On Windows,
+`gundil-music.exe` has the icon too, so a shortcut you make to it (right-click →
+Send to → Desktop, or Pin to Start) shows it.
+
 ## Server or client
 
 Every build except the Android app can work two ways:
