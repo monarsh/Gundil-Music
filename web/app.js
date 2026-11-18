@@ -2335,10 +2335,12 @@ async function accountAction(k, el) {
   const name = el.dataset.user;
   try {
     if (k === 'setup-accounts') {
-      const v = await askForm('Set up accounts', 'Everyone will sign in with their own name and password, and get their own library, playlists and history. <b>This first account is the admin</b>, and gets the library used so far.', [['name', 'Your name'], ['password', 'Password', 'password'], ['again', 'Password again', 'password']], 'Set up');
+      const signUp = el.dataset.set === 'signUp';
+      const v = await askForm('Set up accounts', `${signUp ? 'To let people create their own account, first make yours. ' : ''}Everyone will sign in with their own name and password, and get their own library, playlists and history. <b>This first account is the admin</b>, and gets the library used so far.`, [['name', 'Your name'], ['password', 'Password', 'password'], ['again', 'Password again', 'password']], 'Set up');
       if (!v) return settingsDialog();
       if (v.password !== v.again) { toast('The passwords are different'); return accountAction(k, el); }
       await api('accounts/setup', 'POST', { name: v.name, password: v.password });
+      if (signUp) await api('settings', 'PUT', { signUp: true }).catch(e => toast(e.message));
       location.reload();
     } else if (k === 'add-user') {
       const v = await askForm('Add an account', 'They sign in with this name and password, and can change the password later.', [['name', 'Name'], ['password', 'Password', 'password'], ['admin', 'Admin: can manage accounts and server settings', 'checkbox']], 'Add');
@@ -2538,7 +2540,8 @@ function renderSettings(d) {
     ${setRow(`Signed in as ${me.name}`, me.admin ? 'Admin: manages accounts and server settings' : 'Your own library, playlists and history', `<span class="row-btns"><button class="btn small" data-set="my-password">Change password</button><button class="btn small" data-set="sign-out">Sign out</button></span>`)}` : '';
   const people = !S.session.accounts ? (S.session.admin ? `
     <h3>Accounts</h3>
-    ${setRow('Accounts are off', 'Everyone using this server shares one library. Set up accounts to give each person their own playlists, likes and history, with a password.', `<button class="btn small" data-set="setup-accounts">Set up accounts</button>`)}` : '')
+    ${setRow('Accounts are off', 'Everyone using this server shares one library. Set up accounts to give each person their own playlists, likes and history, with a password.', `<button class="btn small" data-set="setup-accounts">Set up accounts</button>`)}
+    ${setRow('Let people create their own account', 'A "Create an account" link on the sign-in screen. Turning this on first sets up accounts, with you as the admin.', switchBtn('signUp', false))}` : '')
     : me && me.admin ? `
     <h3>Accounts <span class="muted small">· on this server</span></h3>
     ${(S.people || []).map(u => setRow(u.name + (u.admin ? ' · admin' : ''), u.name === me.name ? 'You' : '',
@@ -2622,6 +2625,7 @@ function bindSettings(d) {
     }
     if (k === 'autoplay') { setAutoplay(!S.autoplay); renderSettings(d); }
     else if (k === 'autoUpdate') await saveServerSetting({ autoUpdate: !(S.settings || {}).autoUpdate });
+    else if (k === 'signUp' && !S.session.accounts) return accountAction('setup-accounts', el);
     else if (k === 'signUp') {
       const on = !(S.settings || {}).signUp;
       if (await saveServerSetting({ signUp: on })) toast(on ? 'People can now create their own account' : 'Only admins can add accounts now');

@@ -207,8 +207,10 @@ To give each person their own playlists, likes, saved albums, history and search
    browsers stay signed in for a year.
 
 **Letting people create their own account.** Turn on **Settings → Accounts → Let
-people create their own account**, and the sign-in screen gets a **Create an
-account** link. With an **Invite code** set there, only people who know it can
+people create their own account** (Settings is in the avatar menu, top right; the
+Accounts section is near the bottom), and the sign-in screen gets a **Create an
+account** link. If accounts aren't set up yet, turning it on first asks for your
+own name and password, which becomes the admin account. With an **Invite code** set there, only people who know it can
 sign up (it isn't case-sensitive); leave it empty and anyone who can reach the
 server can. Accounts made this way are never admins. No approval is needed:
 they can use Gundil Music right away.
