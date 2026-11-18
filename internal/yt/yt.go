@@ -36,6 +36,24 @@ type Stream struct {
 	VCodec   string            `json:"vcodec"`   // video codec, e.g. avc1.4d401e
 	Protocol string            `json:"protocol"` // https, m3u8_native...
 	Height   int               `json:"height"`
+	Warnings []string          `json:"warnings"` // what yt-dlp warned about while looking it up
+}
+
+// Relay starts (once) the helper's relay, which fetches stream bytes over
+// yt-dlp's own connection, and returns its address and the token it wants.
+func (c *Client) Relay(ctx context.Context) (addr, token string, err error) {
+	data, err := c.Call(ctx, "relay", nil)
+	if err != nil {
+		return "", "", err
+	}
+	var r struct {
+		Port  int    `json:"port"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.Port == 0 {
+		return "", "", fmt.Errorf("the relay didn't start: %v", err)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", r.Port), r.Token, nil
 }
 
 type reply struct {

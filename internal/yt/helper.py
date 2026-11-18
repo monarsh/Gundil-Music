@@ -508,14 +508,33 @@ OTHER_CLIENTS = ["tv_simply", "mweb", "web_embedded"]
 IPV4 = os.environ.get("GUNDIL_YT_IPV6", "") != "1"  # GUNDIL_YT_IPV6=1 on IPv6-only networks
 
 
+class _WarningLog:
+    """Keeps yt-dlp's warnings for the stream being looked up (the server logs
+    them when YouTube refuses the stream); errors come back as exceptions."""
+
+    def debug(self, msg):
+        pass
+
+    info = debug
+    error = debug
+
+    def warning(self, msg):
+        w = getattr(_local, "warnings", None)
+        if w is not None and msg not in w and len(w) < 8:
+            w.append(str(msg)[:300])
+
+
+_WARNINGS = _WarningLog()
+
+
 def ydl_for(fmt, cookies="", clients=None):
     cookies = cookies or COOKIES
     key = (fmt, cookies, tuple(clients or ()))
     with _ydl_lock:
         if key not in _ydl:
             opts = {
-                "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
-                "format": fmt,
+                "quiet": True, "noplaylist": True, "skip_download": True,
+                "format": fmt, "logger": _WARNINGS,
                 "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
             }
             if IPV4:
@@ -549,6 +568,7 @@ def m_stream(args):
     # Which YouTube players to ask (yt-dlp's choice when empty). The server
     # tries others when YouTube refuses the streams one of them gives.
     clients = [c for c in (args.get("clients") or "").split(",") if c.strip()] or None
+    _local.warnings = []
     try:
         try:
             info = ydl_for(fmt, cookies, clients).extract_info(url, download=False)
@@ -584,7 +604,93 @@ def m_stream(args):
         "size": info.get("filesize") or info.get("filesize_approx") or 0,
         "height": info.get("height") or 0, "abr": info.get("abr") or 0,
         "format": info.get("format_id") or "", "vcodec": info.get("vcodec") or "", "protocol": info.get("protocol") or "",
+        "warnings": _local.warnings,
     }
+
+
+# ---------- relay ----------
+# When YouTube refuses a stream the server fetches itself, the server asks for
+# it through here instead: over yt-dlp's own connection (its network library,
+# address and settings), the way yt-dlp downloads.
+
+_relay = {}
+_relay_lock = threading.Lock()
+
+
+def _relay_ydl():
+    with _relay_lock:
+        if "ydl" not in _relay:
+            opts = {"quiet": True, "no_warnings": True, "logger": _WARNINGS}
+            if IPV4:
+                opts["source_address"] = "0.0.0.0"
+            _relay["ydl"] = yt_dlp.YoutubeDL(opts)
+        return _relay["ydl"]
+
+
+def m_relay(args):
+    """Starts the relay (once) and says where it listens."""
+    import secrets
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    with _relay_lock:
+        if "port" in _relay:
+            return {"port": _relay["port"], "token": _relay["token"]}
+        token = secrets.token_hex(16)
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.headers.get("X-Gundil-Token") != token:
+                    self.send_error(403)
+                    return
+                from yt_dlp.networking import Request
+                from yt_dlp.networking.exceptions import HTTPError
+                link = self.headers.get("X-Gundil-Url") or ""
+                try:
+                    headers = json.loads(self.headers.get("X-Gundil-Headers") or "{}") or {}
+                except ValueError:
+                    headers = {}
+                if not isinstance(headers, dict):
+                    headers = {}
+                if self.headers.get("Range"):
+                    headers["Range"] = self.headers["Range"]
+                try:
+                    resp = _relay_ydl().urlopen(Request(link, headers=headers))
+                except HTTPError as e:
+                    self.send_response(e.status)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                except Exception as e:  # noqa: BLE001
+                    body = (str(e) or e.__class__.__name__)[:300].encode()
+                    self.send_response(502)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                try:
+                    self.send_response(resp.status)
+                    for h in ("Content-Type", "Content-Length", "Content-Range"):
+                        if resp.headers.get(h):
+                            self.send_header(h, resp.headers[h])
+                    self.end_headers()
+                    while True:
+                        chunk = resp.read(64 << 10)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                except OSError:
+                    pass  # the server stopped reading (the listener skipped ahead)
+                finally:
+                    resp.close()
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        _relay.update(port=srv.server_address[1], token=token)
+        return {"port": _relay["port"], "token": token}
 
 
 def m_options(args):

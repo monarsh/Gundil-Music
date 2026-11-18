@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -56,6 +57,8 @@ import json, sys
 for line in sys.stdin:
     req = json.loads(line)
     out = {"id": req["id"], "result": {"url": "`+gv.URL+`/videoplayback", "mime": "video/mp4", "expires": 0}}
+    if req["method"] == "relay":
+        out = {"id": req["id"], "error": "no relay here"}
     sys.stdout.write(json.dumps(out) + "\n")
     sys.stdout.flush()
 `), 0o644)
@@ -139,8 +142,10 @@ func TestStreamTriesOtherPlayers(t *testing.T) {
 import json, sys
 for line in sys.stdin:
     req = json.loads(line)
-    c = req["args"].get("clients", "")
+    c = (req.get("args") or {}).get("clients", "")
     out = {"id": req["id"], "result": {"url": "`+gv.URL+`/videoplayback?c=" + c, "mime": "video/mp4", "expires": 0}}
+    if req["method"] == "relay":
+        out = {"id": req["id"], "error": "no relay here"}
     sys.stdout.write(json.dumps(out) + "\n")
     sys.stdout.flush()
 `), 0o644)
@@ -196,5 +201,85 @@ func TestClientForLinkAddress(t *testing.T) {
 		if (want == "IPv4") != (c == streamClient4) || (want == "IPv6") != (c == streamClient6) {
 			t.Errorf("%s: wrong client", link)
 		}
+	}
+}
+
+// YouTube refuses the server's own connection but not yt-dlp's: the stream
+// plays through the helper's relay (the real one, with yt-dlp's networking),
+// and later pieces and streams go that way first.
+func TestStreamThroughYtDlp(t *testing.T) {
+	py := os.Getenv("GUNDIL_TEST_PYTHON") // a Python with yt-dlp installed
+	if py == "" {
+		py = "python3"
+	}
+	if exec.Command(py, "-c", "import yt_dlp").Run() != nil {
+		t.Skip("yt-dlp not installed (set GUNDIL_TEST_PYTHON to a Python that has it)")
+	}
+	data := make([]byte, 12<<20+777)
+	for i := range data {
+		data[i] = byte(i * 13)
+	}
+	var direct, relayed int32
+	gv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.UserAgent(), "Go-http-client") {
+			atomic.AddInt32(&direct, 1)
+			http.Error(w, "no", http.StatusForbidden)
+			return
+		}
+		atomic.AddInt32(&relayed, 1)
+		start, end, ok := parseRange(r.Header.Get("Range"))
+		if !ok || end-start+1 > streamChunk {
+			http.Error(w, "bad range", http.StatusForbidden)
+			return
+		}
+		end = min(end, int64(len(data))-1)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
+		w.Header().Set("Content-Length", fmt.Sprint(end-start+1))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(data[start : end+1])
+	}))
+	defer gv.Close()
+	real, _ := filepath.Abs("../yt")
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "helper.py")
+	os.WriteFile(helper, []byte(`
+import json, sys
+sys.path.insert(0, `+fmt.Sprintf("%q", real)+`)
+import helper
+for line in sys.stdin:
+    req = json.loads(line)
+    if req["method"] == "relay":
+        out = {"id": req["id"], "result": helper.m_relay({})}
+    else:
+        out = {"id": req["id"], "result": {"url": "`+gv.URL+`/videoplayback", "mime": "audio/webm", "expires": 0,
+               "warnings": ["n challenge solving failed"]}}
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+`), 0o644)
+	ytc, err := yt.New(py, helper, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ytc.Close()
+	s := &Server{YT: ytc}
+	play := func(id string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/stream/"+id, nil)
+		r.SetPathValue("id", id)
+		r.Header.Set("Range", "bytes=0-")
+		w := httptest.NewRecorder()
+		s.stream(w, r)
+		return w
+	}
+	if w := play("aaaaaaaaaaa"); w.Code != http.StatusPartialContent || !bytes.Equal(w.Body.Bytes(), data) {
+		t.Fatalf("status %d, %d of %d bytes", w.Code, w.Body.Len(), len(data))
+	}
+	if d := atomic.LoadInt32(&direct); d != 1 {
+		t.Errorf("the server's own connection was tried %d times, want once", d)
+	}
+	if n := atomic.LoadInt32(&relayed); n != 2 {
+		t.Errorf("%d pieces through yt-dlp, want 2", n)
+	}
+	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent || atomic.LoadInt32(&direct) != 1 {
+		t.Errorf("next stream: status %d, own connection tried %d times in all", w.Code, atomic.LoadInt32(&direct))
 	}
 }

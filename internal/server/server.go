@@ -52,6 +52,7 @@ type Server struct {
 
 	mu         sync.Mutex
 	goodPlayer map[string]string      // stream kind -> YouTube player whose streams play
+	relayFirst bool                   // fetch streams through yt-dlp's connection first: YouTube refused ours
 	clients    map[chan string]string // live-update channel -> account ("" without accounts)
 	sentQVer   int
 	libs       map[string]*store.Store
@@ -559,6 +560,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	tries := s.playerTries(kind)
 	try := 0
+	warned := map[*yt.Stream]bool{}
 	get := func(from, to int64) (*http.Response, error) {
 		var lastErr error
 		for ; try < len(tries); try++ {
@@ -576,41 +578,47 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
-			if err != nil {
-				return nil, err
+			// The server's own connection first, then yt-dlp's (or the other
+			// way round once ours has been refused and yt-dlp's wasn't).
+			s.mu.Lock()
+			ways := []bool{s.relayFirst, !s.relayFirst}
+			s.mu.Unlock()
+			refused := false
+			for _, viaRelay := range ways {
+				resp, how, err := s.fetchPiece(r.Context(), st, from, to, viaRelay)
+				if err != nil {
+					lastErr = err
+					if viaRelay {
+						log.Printf("stream %s (%s): fetching through yt-dlp failed: %v", id, kind, err)
+					}
+					continue
+				}
+				switch resp.StatusCode {
+				case http.StatusForbidden, http.StatusGone, http.StatusNotFound:
+					resp.Body.Close()
+					refused = true
+					lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
+					log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s; %s)", id, kind, st.Format, orDefault(t.clients), resp.Status, how)
+					if !warned[st] && len(st.Warnings) > 0 {
+						warned[st] = true
+						log.Printf("stream %s: yt-dlp warned while looking it up: %s", id, strings.Join(st.Warnings, " | "))
+					}
+					continue
+				case http.StatusRequestedRangeNotSatisfiable:
+					resp.Body.Close()
+					return nil, errRangeEnd
+				case http.StatusOK, http.StatusPartialContent:
+					s.notePlayer(kind, t.clients, true)
+					s.noteRelay(viaRelay, refused)
+					return resp, nil
+				default:
+					resp.Body.Close()
+					return nil, fmt.Errorf("YouTube answered %s", resp.Status)
+				}
 			}
-			for k, v := range st.Headers {
-				req.Header.Set(k, v)
-			}
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", from, to))
-			client, family := clientFor(st.URL)
-			var local string
-			req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-				GotConn: func(c httptrace.GotConnInfo) { local = c.Conn.LocalAddr().String() },
-			}))
-			resp, err := client.Do(req)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
-				resp.Body.Close()
-				lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
-				log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s; link for %s, fetched from %s)", id, kind, st.Format, orDefault(t.clients), resp.Status, orUnknown(family), local)
+			if refused {
 				s.notePlayer(kind, t.clients, false)
-				continue
 			}
-			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-				resp.Body.Close()
-				return nil, errRangeEnd
-			}
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-				resp.Body.Close()
-				return nil, fmt.Errorf("YouTube answered %s", resp.Status)
-			}
-			s.notePlayer(kind, t.clients, true)
-			return resp, nil
 		}
 		return nil, lastErr
 	}
@@ -687,6 +695,72 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 }
 
 var errRangeEnd = errors.New("past the end of the stream")
+
+// relayClient talks to the helper's relay on this machine (never a proxy).
+var relayClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 nil,
+	ResponseHeaderTimeout: 45 * time.Second,
+	MaxIdleConnsPerHost:   4,
+}}
+
+// fetchPiece asks YouTube for bytes from..to of a stream link: over the
+// server's own connection, or through yt-dlp's (the helper's relay). It
+// also says how it fetched, for the log.
+func (s *Server) fetchPiece(ctx context.Context, st *yt.Stream, from, to int64, viaRelay bool) (*http.Response, string, error) {
+	rng := fmt.Sprintf("bytes=%d-%d", from, to)
+	if viaRelay {
+		addr, token, err := s.YT.Relay(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/", nil)
+		if err != nil {
+			return nil, "", err
+		}
+		hdr, _ := json.Marshal(st.Headers)
+		req.Header.Set("X-Gundil-Token", token)
+		req.Header.Set("X-Gundil-Url", st.URL)
+		req.Header.Set("X-Gundil-Headers", string(hdr))
+		req.Header.Set("Range", rng)
+		resp, err := relayClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusBadGateway {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
+			resp.Body.Close()
+			return nil, "", errors.New(strings.TrimSpace(string(msg)))
+		}
+		return resp, "fetched through yt-dlp's connection", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, st.URL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	for k, v := range st.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Range", rng)
+	client, family := clientFor(st.URL)
+	var local string
+	req = req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(c httptrace.GotConnInfo) { local = c.Conn.LocalAddr().String() },
+	}))
+	resp, err := client.Do(req)
+	return resp, fmt.Sprintf("link for %s, fetched by the server from %s", orUnknown(family), local), err
+}
+
+// noteRelay remembers whether streams play through yt-dlp's connection
+// rather than the server's own, so the next piece goes the working way first.
+func (s *Server) noteRelay(viaRelay, afterRefusal bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if viaRelay != s.relayFirst && (afterRefusal || !viaRelay) {
+		s.relayFirst = viaRelay
+		if viaRelay {
+			log.Printf("streams now play through yt-dlp's connection: YouTube refused the server's own")
+		} else {
+			log.Printf("streams play over the server's own connection again")
+		}
+	}
+}
 
 // Other YouTube players to ask when YouTube refuses the stream links yt-dlp's
 // usual ones give: the links of some players are refused without proof only
