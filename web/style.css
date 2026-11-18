@@ -324,7 +324,7 @@ img { display: block; }
 .pp-art.show-video .pp-img { visibility: hidden; }
 .pp-fs { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, .5); display: none; }
 .pp-art.show-video .pp-fs { display: inline-grid; }
-.pp-art.fs { position: fixed; inset: 0; z-index: 200; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; aspect-ratio: auto; border-radius: 0; box-shadow: none; }
+.pp-art.fs { position: fixed; inset: 0; z-index: 200; width: auto; height: auto; max-width: none; max-height: none; margin: 0; aspect-ratio: auto; border-radius: 0; box-shadow: none; }
 .drag-handle { color: var(--text2); cursor: grab; touch-action: none; }
 .drag-handle:hover { color: var(--text); }
 .row.dragging { background: var(--raised); box-shadow: 0 6px 20px rgba(0, 0, 0, .6); z-index: 3; cursor: grabbing; border-radius: 4px; }
@@ -488,7 +488,7 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
   .pp-art { width: 100%; height: auto; max-height: 42vh; max-width: 42vh; border-radius: 8px; box-shadow: 0 16px 40px rgba(0, 0, 0, .5); }
   .pp-art.video { max-width: 100%; }
   .pp-info { display: flex; flex-direction: column; gap: 12px; width: 100%; }
-  .pp-title { font-size: 22px; font-weight: 700; line-height: 1.25; white-space: nowrap; overflow: hidden; }
+  .pp-title { font-size: 24px; font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; }
   .pp-sub { color: var(--text2); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
   .pp-actions { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
   .pill-group { display: flex; background: var(--hover); border-radius: 18px; flex: none; }
@@ -712,9 +712,10 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 
 /* ---------- long titles scroll (phones) ---------- */
 .pp-title > span { display: inline-block; }
-@keyframes mq { 0%, 18% { transform: translateX(0); } 82%, 100% { transform: translateX(var(--mq)); } }
+@keyframes mq { 0%, 22% { transform: translateX(0); } 100% { transform: translateX(var(--mq)); } }
+.pp-title .mq-gap { display: inline-block; width: 48px; }
 .pp-title.mq { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 24px), transparent); padding-left: 12px; margin-left: -12px; }
-.pp-title.mq > span { animation: mq var(--mq-t, 8s) ease-in-out infinite alternate; }
+.pp-title.mq > span { animation: mq var(--mq-t, 10s) linear infinite; }
 @media (prefers-reduced-motion: reduce) { .pp-title.mq > span { animation: none; } }
 
 /* ---------- phone, video showing: edge to edge on black, as in YouTube Music ---------- */

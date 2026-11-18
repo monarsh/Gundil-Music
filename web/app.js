@@ -725,7 +725,7 @@ function renderPlayer() {
       $('#b-sub').innerHTML = trackSub(t, { views: false }) + (t.year ? ' • ' + esc(t.year) : '');
       $('#pp-img').innerHTML = img(t.thumb, 720);
       $('#pp-art').classList.toggle('video', t.type === 'video' && !/googleusercontent/.test(t.thumb));
-      $('#pp-title').innerHTML = `<span>${esc(t.title)}</span>`;
+      $('#pp-title').dataset.t = t.title;
       marquee($('#pp-title'));
       $('#pp-sub').innerHTML = artistLinks(t.artists);
       $('#fs-title').textContent = t.title;
@@ -935,16 +935,22 @@ function setFullscreen(on, auto = false) {
 }
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && !inAndroidApp()) setFullscreen(false); });
 
-/* A title too long for its line scrolls sideways and back, as in YouTube Music. */
+/* A title too long for its line scrolls round, as in YouTube Music: it
+   rests, runs left, and a copy following it takes its place. */
 function marquee(el) {
+  const text = el.dataset.t || '';
   el.classList.remove('mq');
+  el.innerHTML = `<span>${esc(text)}</span>`;
+  const turn = el.mqTurn = (el.mqTurn || 0) + 1;
   requestAnimationFrame(() => {
     const span = el.firstElementChild;
-    if (!span || !el.clientWidth) return; // hidden: done again when shown
-    const d = span.scrollWidth - el.clientWidth;
-    if (d <= 2) return;
-    el.style.setProperty('--mq', -(d + 16) + 'px');
-    el.style.setProperty('--mq-t', (4 + d / 40).toFixed(1) + 's');
+    if (turn !== el.mqTurn || !span || !el.clientWidth) return; // a newer call measures; hidden: done again when shown
+    const w = span.offsetWidth;
+    if (w <= el.clientWidth + 2) return;
+    span.innerHTML = `${esc(text)}<i class="mq-gap"></i><span aria-hidden="true">${esc(text)}</span>`;
+    const run = w + 48; // the copy lands where the title started
+    el.style.setProperty('--mq', -run + 'px');
+    el.style.setProperty('--mq-t', (run / 45 / 0.78).toFixed(1) + 's');
     el.classList.add('mq');
   });
 }
