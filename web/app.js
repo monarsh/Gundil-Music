@@ -917,8 +917,7 @@ function setFullscreen(on, auto = false) {
   if (on === art.classList.contains('fs')) return;
   art.classList.toggle('fs', on);
   fsByRotation = on && auto;
-  if (on) fsShow();
-  else fsHide();
+  if (on) { fsShow(); fitFullscreen(); setTimeout(fitFullscreen, 300); setTimeout(reportFullscreen, 1200); } else { fsHide(); fitFullscreen(); }
   $('#pp-fs').innerHTML = icon(on ? 'fullscreenExit' : 'fullscreen');
   $('#pp-fs').setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
   if (inAndroidApp()) {
@@ -955,6 +954,41 @@ function marquee(el) {
   });
 }
 addEventListener('resize', () => marquee($('#pp-title')));
+
+/* Full screen covers exactly what's visible. Some Android WebViews, just
+   after turning, lay the page out taller than the screen, which pushed the
+   bottom row of the controls out of sight; the visible area is measured
+   instead, again whenever it changes. */
+function fitFullscreen() {
+  const art = $('#pp-art'), vv = window.visualViewport;
+  if (!art.classList.contains('fs') || !vv) {
+    for (const k of ['top', 'left', 'width', 'height', 'right', 'bottom']) art.style[k] = '';
+    return;
+  }
+  Object.assign(art.style, { top: vv.offsetTop + 'px', left: vv.offsetLeft + 'px', width: vv.width + 'px', height: vv.height + 'px', right: 'auto', bottom: 'auto' });
+}
+if (window.visualViewport) {
+  visualViewport.addEventListener('resize', fitFullscreen);
+  visualViewport.addEventListener('scroll', fitFullscreen);
+}
+addEventListener('resize', fitFullscreen);
+
+/* Once per page, tell the server how full screen fits this device; the
+   server's log then shows what to fix if the controls don't fit. */
+const layoutReported = new Set();
+function reportLayout(what, box, last) {
+  if (layoutReported.has(what) || !box.offsetWidth) return;
+  layoutReported.add(what);
+  const vv = window.visualViewport || { width: innerWidth, height: innerHeight, offsetTop: 0, offsetLeft: 0, scale: 1 };
+  const r = e => { const b = e.getBoundingClientRect(); return `${Math.round(b.left)},${Math.round(b.top)} ${Math.round(b.width)}x${Math.round(b.height)}`; };
+  const end = last.getBoundingClientRect();
+  const fits = end.height > 0 && end.bottom <= vv.offsetTop + vv.height + 2;
+  const info = `${fits ? 'fits' : 'controls cut off'}: page ${innerWidth}x${innerHeight}, visible ${Math.round(vv.width)}x${Math.round(vv.height)} at ${Math.round(vv.offsetLeft)},${Math.round(vv.offsetTop)} zoom ${(vv.scale || 1).toFixed(2)}, screen ${screen.width}x${screen.height} @${devicePixelRatio}, box ${r(box)}, last controls ${r(last)}, ${navigator.userAgent.replace(/.*(Android [\d.]+).*/, '$1')}`;
+  fetch('/api/layout-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what, info }) }).catch(() => {});
+}
+function reportFullscreen() {
+  if ($('#pp-art').classList.contains('fs')) reportLayout('full screen', $('#pp-art'), $('.fs-bottom'));
+}
 
 /* Full-screen controls, as in YouTube Music: a tap shows them (they fade
    after a few seconds while playing), a double tap on the left or right
@@ -1017,6 +1051,8 @@ window.gundilOrientation = landscape => {
   const art = $('#pp-art');
   if (landscape && S.ppOpen && art.classList.contains('show-video') && !art.classList.contains('fs')) setFullscreen(true, true);
   else if (!landscape && fsByRotation) setFullscreen(false);
+  // The sideways player (no video full screen): report how its timeline fits.
+  if (landscape) setTimeout(() => { if (S.ppOpen && !art.classList.contains('fs')) reportLayout('sideways player', $('#pp'), $('#pp-seek')); }, 1200);
 };
 
 /* =========================================================================
@@ -3198,9 +3234,25 @@ $('#main').addEventListener('scroll', () => { scrolls.set(location.hash || '#/',
 window.addEventListener('hashchange', () => route());
 addEventListener('resize', () => { if (!mobile()) $('#pp').classList.remove('sheet'); });
 
+/* The server was updated (and restarted) while this page stayed open, as it
+   does in the Android app while music plays: load the new build of the app,
+   now if nothing is playing here, otherwise once the music stops. */
+let pageBuild = '', reloadTimer = null;
+function checkPageBuild() {
+  const now = S.info && S.info.webBuild;
+  if (!pageBuild || !now || now === pageBuild || reloadTimer) return;
+  const quiet = () => isServer() || !current() || !S.playing || S.paused;
+  if (quiet()) return location.reload();
+  toast('Gundil Music was updated', { label: 'Reload', run: () => location.reload() });
+  reloadTimer = setInterval(() => { if (quiet()) location.reload(); }, 5000);
+}
+
 function connectEvents() {
   const es = new EventSource('/api/events');
-  es.addEventListener('open', () => { serverQVer = -1; }); // the server may have restarted
+  es.addEventListener('open', async () => {
+    serverQVer = -1; // the server may have restarted
+    try { S.info = await api('info'); checkPageBuild(); } catch { /* ignore */ }
+  });
   es.addEventListener('player', e => applyServer(JSON.parse(e.data)));
   es.addEventListener('state', async () => { try { setUser(await api('state')); } catch { /* ignore */ } });
   es.addEventListener('info', async e => {
@@ -3401,6 +3453,7 @@ async function init() {
   try {
     const [info, user, server] = await Promise.all([api('info'), api('state'), api('player')]);
     S.info = info;
+    pageBuild = info.webBuild || '';
     setTimeout(signInNotice, 1500);
     S.server = server;
     setUser(user);

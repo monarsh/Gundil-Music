@@ -86,6 +86,15 @@ else
   forward; node drive.js check && echo "reopened on the playing page" || { echo "::error::reopening the app lost the music"; fail=1; }
 fi
 
+echo "== turn the phone sideways: full-screen video controls must fit the screen"
+adb shell settings put system accelerometer_rotation 0
+adb shell settings put system user_rotation 1
+sleep 5
+forward; node drive.js fullscreen || echo "::warning::the full-screen video controls don't fit the screen sideways"
+shot 8-fullscreen-landscape
+adb shell settings put system user_rotation 0
+sleep 4
+
 echo "== download a song in the app, then play it with the server off"
 forward; node drive.js download || { echo "::error::downloading a song failed in the app"; fail=1; }
 pkill -x gundil-music && echo "test server stopped"

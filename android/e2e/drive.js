@@ -1,6 +1,6 @@
 // Drives the app's WebView over the Chrome DevTools protocol (adb-forwarded
 // to localhost:9222): plays a song, then reports playback state on demand.
-//   node drive.js play | state | check (exit 2 unless playing) | download | offline
+//   node drive.js play | state | check (exit 2 unless playing) | download | offline | fullscreen
 const mode = process.argv[2] || 'state';
 (async () => {
   // The WebView's debugging target can take a while to appear after launch.
@@ -58,6 +58,20 @@ const mode = process.argv[2] || 'state';
     console.log('offline', playing ? 'playing a download' : 'NOT playing', await state());
     ws.close();
     process.exit(playing ? 0 : 2);
+  }
+  if (mode === 'fullscreen') {
+    // The phone is sideways: show the player's video full screen, and check
+    // its controls fit what's visible (the bottom row was cut off on phones).
+    await ev(`openPlayer(); document.querySelector('#pp-art').classList.add('show-video'); setFullscreen(true); true`);
+    await new Promise(r => setTimeout(r, 2500));
+    const m = JSON.parse(await ev(`(() => {
+      const vv = window.visualViewport, b = document.querySelector('.fs-bottom').getBoundingClientRect(), a = document.querySelector('#pp-art').getBoundingClientRect();
+      return JSON.stringify({ fs: document.querySelector('#pp-art').classList.contains('fs'), page: [innerWidth, innerHeight], visible: [vv.width, vv.height, vv.offsetTop, vv.scale], screen: [screen.width, screen.height, devicePixelRatio], box: [a.left, a.top, a.width, a.height], bottomRow: [b.top, b.bottom] });
+    })()`));
+    const fits = m.fs && m.bottomRow[1] <= m.visible[1] + m.visible[2] + 2 && m.bottomRow[1] > 0;
+    console.log('full screen', fits ? 'fits' : 'DOES NOT FIT', JSON.stringify(m));
+    ws.close();
+    process.exit(fits ? 0 : 2);
   }
   if (mode === 'check') {
     // Is music still playing? The position moves on (or the next song started).

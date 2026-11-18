@@ -41,8 +41,11 @@ type Server struct {
 	BT      *bluetooth.Manager
 	Web     fs.FS
 	Version string
-	Auth    string // "user:password", empty for no auth
-	Port    int
+	// WebBuild tells one build of the web app from another (the version
+	// stays the same across rebuilds): open pages reload when it changes.
+	WebBuild string
+	Auth     string // "user:password", empty for no auth
+	Port     int
 
 	Settings *settings.Store
 	// OnSettings applies changed settings (region, language, quality...).
@@ -223,6 +226,22 @@ func (s *Server) Handler() http.Handler {
 			}, v[:min(len(v), 200)])
 		}
 		log.Printf("video %s didn't play on a device: %s (codecs %s, %sp, %s)", clip(r.PathValue("id")), clip(q.Get("error")), clip(q.Get("codecs")), clip(q.Get("h")), clip(r.UserAgent()))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// How the app's layout fits a device (full screen, for now), for the log.
+	mux.HandleFunc("POST /api/layout-report", func(w http.ResponseWriter, r *http.Request) {
+		var v struct{ What, Info string }
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&v) == nil {
+			clip := func(s string, n int) string {
+				return strings.Map(func(r rune) rune {
+					if r < ' ' {
+						return ' '
+					}
+					return r
+				}, s[:min(len(s), n)])
+			}
+			log.Printf("%s on a device: %s", clip(v.What, 40), clip(v.Info, 600))
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -442,6 +461,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"name":       "Gundil Music",
 		"version":    s.Version,
+		"webBuild":   s.WebBuild,
 		"hostname":   host,
 		"player":     s.Player.Available(),
 		"bluetooth":  s.BT.Available(),

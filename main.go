@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -174,7 +176,7 @@ func main() {
 	tcp := ln.Addr().(*net.TCPAddr)
 
 	web, _ := fs.Sub(webFiles, "web")
-	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port, Settings: cfg,
+	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, WebBuild: webBuild(web), Auth: *auth, Port: tcp.Port, Settings: cfg,
 		Users: accts, DataDir: *dataDir}
 	srv.OnSettings = func(old, now settings.Settings) {
 		ytc.SetAudioQuality(now.AudioQuality)
@@ -438,4 +440,20 @@ func diagnoseYouTube(ytc *yt.Client, id, dataDir string) {
 		fmt.Println("Works: " + strings.Join(working, ", "))
 	}
 	fmt.Println("Copy everything above and send it to whoever helps you with Gundil Music.")
+}
+
+// webBuild fingerprints the web app's files, so open pages can tell when
+// the server they talk to now has a different build of them.
+func webBuild(web fs.FS) string {
+	h := sha256.New()
+	fs.WalkDir(web, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, _ := fs.ReadFile(web, p)
+		h.Write([]byte(p))
+		h.Write(b)
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
