@@ -88,6 +88,17 @@ The speaker is trusted, so it reconnects on its own after a reboot.
 YouTube changes often; the server updates yt-dlp by itself daily (see
 "Keeping YouTube working" below).
 
+## Closing and quitting
+
+On Windows and the Linux desktop (AppImage), Gundil Music runs in the
+background and shows its window in your browser. **Closing the browser window
+doesn't stop it**, so phones and other devices can keep using it, and music
+playing on this computer's speaker carries on.
+
+- **Starting Gundil Music again** while it's running just opens its window again.
+- **To stop it**, use the avatar menu → **Quit Gundil Music**. It's shown only on
+  the computer running it; other devices can't quit it.
+
 ## Server or client
 
 Every build except the Android app can work two ways:

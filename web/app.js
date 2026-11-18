@@ -37,6 +37,7 @@ const ICONS = {
   right: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z',
   account: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 4c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm0 14c-2.03 0-4.43-.82-6.14-2.88a9.947 9.947 0 0112.28 0C16.43 19.18 14.03 20 12 20z',
+  power: 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42A6.92 6.92 0 0119 12c0 3.87-3.13 7-7 7A6.995 6.995 0 016.58 6.58L5.17 5.17A8.932 8.932 0 003 12a9 9 0 0018 0c0-2.74-1.23-5.18-3.17-6.83z',
   logout: 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z',
   import: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
   check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
@@ -2065,6 +2066,22 @@ async function accountAction(k, el) {
   } catch (e) { toast(e.message); settingsDialog(); }
 }
 
+/* ---------- quitting (on the computer running Gundil Music) ---------- */
+async function quitDialog() {
+  const serving = S.conn && S.conn.mode !== 'client';
+  const d = dialog(`<form method="dialog" class="ask"><h2>Quit Gundil Music?</h2>
+    <p class="muted">This stops Gundil Music on this computer. Closing the browser window doesn't: it keeps running for your phone and other devices.${serving ? ' <b>Phones and other devices using this computer as their server will stop playing too.</b>' : ''}</p>
+    <div class="dlg-actions"><button class="btn" value="cancel">Cancel</button><button class="btn white" value="ok">Quit</button></div></form>`);
+  if (!await formResult(d)) return;
+  try {
+    const r = await fetch('/_gundil/quit', { method: 'POST', headers: { 'X-Gundil': '1' } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  } catch (e) { return toast(e.message); }
+  audio.pause();
+  document.body.innerHTML = `<div id="signin"><div class="signin-box"><div class="logo-row">${icon('power')}Gundil Music</div>
+    <h1>Gundil Music has stopped</h1><p class="muted">You can close this window. To use it again, start Gundil Music from your apps menu.</p></div></div>`;
+}
+
 /* ---------- linking a Google (YouTube Music) account ---------- */
 function googleDialog() {
   const d = dialog(`<form method="dialog" class="ask"><h2>Link your YouTube Music account</h2>
@@ -2490,6 +2507,8 @@ document.addEventListener('click', async e => {
           { icon: 'settings', label: 'Settings', run: settingsDialog },
           { icon: 'info', label: 'About', run: aboutDialog },
           S.session.user ? { icon: 'logout', label: 'Sign out', run: signOut } : null,
+          !android && S.conn && S.conn.canQuit ? '-' : null,
+          !android && S.conn && S.conn.canQuit ? { icon: 'power', label: 'Quit Gundil Music', run: quitDialog } : null,
           android ? { icon: 'speaker', label: 'Change server', run: () => android.changeServer() } : null,
         ], actEl);
       case 'search-open':
@@ -2714,6 +2733,7 @@ async function init() {
   } catch { /* an older server: no accounts */ }
   if (S.session.accounts && !S.session.user) return showSignIn();
   renderAvatar();
+  fetch('/_gundil/mode').then(r => r.ok ? r.json() : null).then(m => { if (m) S.conn = m; }).catch(() => {});
   try {
     const [info, user, server] = await Promise.all([api('info'), api('state'), api('player')]);
     S.info = info;

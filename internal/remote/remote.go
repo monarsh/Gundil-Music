@@ -68,6 +68,8 @@ type Switch struct {
 	Port    int
 	// OnChange runs after the mode or the server changed.
 	OnChange func(old, now Config)
+	// OnQuit stops the program ("Quit Gundil Music" in the app).
+	OnQuit func()
 
 	path     string
 	instance string
@@ -346,7 +348,7 @@ func (s *Switch) own(w http.ResponseWriter, r *http.Request) {
 	// asking first, so such a page can't switch this program's mode.
 	changing := r.Method != "GET" && r.Method != "HEAD"
 	if changing && (r.Header.Get("X-Gundil") == "" || !s.mayChange(r)) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "the mode can only be changed on the computer running Gundil Music"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the computer running Gundil Music can do this"})
 		return
 	}
 	switch {
@@ -369,6 +371,7 @@ func (s *Switch) own(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"mode": c.Mode, "server": c.Server, "canChange": s.mayChange(r),
 			"version": s.Version, "hostname": host, "addresses": Addresses(s.Port),
+			"canQuit": s.OnQuit != nil && s.mayChange(r),
 		})
 	case path == "mode" && r.Method == "PUT":
 		var c Config
@@ -393,6 +396,15 @@ func (s *Switch) own(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, now)
+	case path == "quit" && r.Method == "POST" && s.OnQuit != nil:
+		writeJSON(w, 200, map[string]bool{"quitting": true})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond) // let the answer reach the browser
+			s.OnQuit()
+		}()
 	case path == "scan" && r.Method == "GET":
 		list := s.Scan(r.Context())
 		if list == nil {

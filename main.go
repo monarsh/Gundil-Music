@@ -141,6 +141,16 @@ func main() {
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
+		// Started again while already running (closing the browser window
+		// leaves the server on): show the running one instead of failing.
+		if u := runningAt(*addr); u != "" {
+			log.Printf("Gundil Music is already running at %s", u)
+			if *open {
+				openBrowser(u)
+				time.Sleep(time.Second) // let the browser start before exiting
+			}
+			return
+		}
 		log.Fatalf("cannot listen on %s: %v", *addr, err)
 	}
 	tcp := ln.Addr().(*net.TCPAddr)
@@ -195,6 +205,12 @@ func main() {
 		if _, err := sw.Set(c); err != nil {
 			log.Fatalf("cannot set the mode: %v", err)
 		}
+	}
+	sw.OnQuit = func() {
+		log.Printf("quitting (asked from the app)")
+		pl.Close()
+		ytc.Close()
+		os.Exit(0)
 	}
 	sw.OnChange = func(old, now remote.Config) {
 		if now.Mode == remote.Client {
@@ -272,6 +288,26 @@ func logYouTubeStatus(ytc *yt.Client) {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
+}
+
+// runningAt returns the address of a Gundil Music already listening on
+// addr's port on this computer, or "" if something else holds it.
+func runningAt(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	u := "http://localhost:" + port
+	c := http.Client{Timeout: 5 * time.Second}
+	res, err := c.Get("http://127.0.0.1:" + port + "/_gundil/mode")
+	if err != nil {
+		return ""
+	}
+	defer res.Body.Close()
+	if res.Header.Get("X-Gundil-Instance") == "" {
+		return ""
+	}
+	return u
 }
 
 // openBrowser shows the app in the default browser (desktop builds).
