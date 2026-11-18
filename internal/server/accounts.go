@@ -615,16 +615,28 @@ func (s *Server) cookiesPath(name string) string {
 // accountCookies lists the linked Google accounts a stream may use when
 // YouTube asks to sign in: the asker's own first, then the admins'.
 func (s *Server) accountCookies(r *http.Request) []string {
-	var names []string
 	if u := s.user(r).Name; u != "" {
-		names = append(names, u)
-	} else if s.accountsOn() {
-		names = append(names, s.playerAccount()) // the server's own player
+		return s.cookiesFor(u)
+	}
+	return s.playerCookies() // the server's own player
+}
+
+// playerCookies: the accounts the server's own player may play with.
+func (s *Server) playerCookies() []string {
+	if s.accountsOn() {
+		return s.cookiesFor(s.playerAccount())
+	}
+	return s.cookiesFor("")
+}
+
+// cookiesFor lists name's linked account first, then the admins'.
+func (s *Server) cookiesFor(first string) []string {
+	var names []string
+	if first != "" || !s.accountsOn() {
+		names = append(names, first)
 	}
 	if s.accountsOn() {
 		names = append(names, s.Users.Admins()...)
-	} else {
-		names = append(names, "")
 	}
 	var out []string
 	seen := map[string]bool{}

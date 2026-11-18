@@ -1972,6 +1972,44 @@ function youtubeUpdated() {
   }
 }
 
+/* YouTube's "confirm you're not a bot" check, in words. */
+function signInCheckText() {
+  const c = S.info.signInCheck;
+  if (!c || !c.active) return '';
+  const since = c.since ? new Date(c.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const how = c.accountFailed ? 'The linked YouTube Music account was signed out by YouTube: link it again so songs keep playing.'
+    : c.accountWorks ? 'Songs play signed in with a linked YouTube Music account, so they start normally.'
+    : 'Songs can\'t play until a YouTube Music account is linked (Settings → YouTube Music account).';
+  return `YouTube is asking this server to confirm it isn't a bot${since ? ` (since ${since})` : ''}. ${how}`;
+}
+
+/* Tells whoever can fix it, once, that songs need a linked account. */
+function signInNotice() {
+  const c = S.info && S.info.signInCheck;
+  const old = $('#notice');
+  const need = c && c.active && (c.accountFailed || (c.noAccount && !S.info.accountLinked));
+  const mayLink = S.session.user || S.session.admin;
+  if (!need || !mayLink || S.offline) { if (old) old.remove(); return; }
+  const key = `${c.since}|${c.accountFailed ? 'expired' : 'none'}`;
+  if (local.get('signinNotice', '') === key || old) return;
+  const el = document.createElement('div');
+  el.id = 'notice';
+  el.setAttribute('role', 'status');
+  el.innerHTML = `${icon('info')}<div><b>${c.accountFailed ? 'Link your YouTube Music account again' : 'YouTube is asking to sign in'}</b>
+      <span>${c.accountFailed ? 'YouTube signed the linked account out, and is asking this server to confirm it isn\'t a bot. Songs won\'t play until it\'s linked again.'
+        : 'YouTube wants this server to confirm it isn\'t a bot. Link a YouTube Music account and songs play signed in, without delay.'}</span></div>
+    <button class="btn white small" data-n="link">${c.accountFailed ? 'Link again' : 'Link account'}</button>
+    <button class="icon-btn" data-n="close" aria-label="Dismiss">${icon('close')}</button>`;
+  el.onclick = e => {
+    const b = e.target.closest('[data-n]');
+    if (!b) return;
+    local.set('signinNotice', key);
+    el.remove();
+    if (b.dataset.n === 'link') googleDialog();
+  };
+  $('#app').appendChild(el);
+}
+
 function aboutDialog() {
   const y = S.info.youtube || {};
   const last = S.info.lastUpdate;
@@ -1980,6 +2018,7 @@ function aboutDialog() {
     <p class="muted">Server: <b>${esc(S.info.hostname)}</b> · version ${esc(S.info.version)}</p>
     <p class="muted" style="margin-top:8px">YouTube Music: ${y.ok ? `connected (ytmusicapi ${esc(y.ytmusicapi)}, yt-dlp ${esc(y.yt_dlp)}, JavaScript: ${esc((y.js || []).join(', ') || 'none')})` : esc(y.error || 'not connected')}</p>
     ${y.warning ? `<p style="margin-top:8px">${esc(y.warning)}</p>` : ''}
+    <p class="small" style="margin-top:8px">${S.info.signInCheck && S.info.signInCheck.active ? esc(signInCheckText()) : '<span class="muted">YouTube isn\'t asking this server to sign in: songs play normally.</span>'}</p>
     <p class="muted small" style="margin-top:12px">YouTube changes often. The server updates yt-dlp and ytmusicapi daily${when ? `; last updated ${esc(when)}` : ''}.</p>
     <div class="dlg-actions" style="justify-content:flex-start;margin-top:12px"><button class="btn white" data-act="yt-update">${icon('refresh')}Update YouTube support</button></div>
     <p class="muted small" style="margin-top:16px">Not affiliated with YouTube or Google. Your library is stored on the server.</p>`);
@@ -3033,6 +3072,7 @@ function connectEvents() {
     try { d = JSON.parse(e.data); } catch { /* ignore */ }
     try { S.info = await api('info'); } catch { /* ignore */ }
     if (d && d.youtubeUpdated) youtubeUpdated();
+    signInNotice();
   });
   es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data), true));
   es.addEventListener('accounts', accountsChanged);
@@ -3216,6 +3256,7 @@ async function init() {
   try {
     const [info, user, server] = await Promise.all([api('info'), api('state'), api('player')]);
     S.info = info;
+    setTimeout(signInNotice, 1500);
     S.server = server;
     setUser(user);
   } catch (e) {

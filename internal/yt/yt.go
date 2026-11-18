@@ -77,6 +77,7 @@ type Client struct {
 	cmu      sync.Mutex
 	cache    map[string]cached
 	flights  map[string]*flight
+	signin   signIn
 	dirty    bool   // the cache changed since it was last saved
 	cacheFor string // region and language of the cached pages
 	streams  map[string]*Stream
@@ -472,21 +473,40 @@ func (c *Client) StreamFormat(ctx context.Context, videoID string, f Format, ref
 	if s != nil && (s.Expires == 0 || time.Now().Unix() < s.Expires-300) {
 		return s, nil
 	}
-	data, err := c.Cached(ctx, "stream", args, 0)
-	if err != nil && IsSignInCheck(err) {
-		// YouTube wants a signed-in viewer: try the linked Google accounts.
-		for _, file := range cookiesFrom(ctx) {
-			a := map[string]string{"cookies": file}
-			for k, v := range args {
-				a[k] = v
-			}
-			d, e := c.Call(ctx, "stream", a)
-			if e == nil {
-				data, err = d, nil
-				break
-			}
-			if !IsSignInCheck(e) {
-				err = e
+	files := cookiesFrom(ctx)
+	var data json.RawMessage
+	var err error
+	signedIn := false
+	if c.checkActive() && len(files) > 0 {
+		// YouTube has been asking this server to sign in: go straight to a
+		// linked account instead of failing the usual way first.
+		var asked bool
+		data, err, asked = c.streamSignedIn(ctx, args, files)
+		if err == nil {
+			signedIn = true
+			c.noteSignIn(true, true, false, false)
+		} else if asked {
+			c.noteSignIn(true, false, true, false) // the account's sign-in has expired
+		}
+	}
+	if !signedIn {
+		data, err = c.Cached(ctx, "stream", args, 0)
+		if err == nil {
+			c.noteSignIn(false, false, false, false)
+		} else if IsSignInCheck(err) {
+			if len(files) == 0 {
+				c.noteSignIn(true, false, false, true)
+			} else {
+				d, e, asked := c.streamSignedIn(ctx, args, files)
+				if e == nil {
+					data, err = d, nil
+					c.noteSignIn(true, true, false, false)
+				} else {
+					c.noteSignIn(true, false, asked, false)
+					if !asked {
+						err = e
+					}
+				}
 			}
 		}
 	}

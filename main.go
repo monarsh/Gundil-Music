@@ -182,7 +182,15 @@ func main() {
 	pl.Resolve = srv.StreamURL
 	pl.OnChange = srv.BroadcastPlayer
 	pl.OnPlay = func(t model.Track) { srv.PlayerLibrary().AddHistory(t) }
-	pl.Prefetch = func(id string) { ytc.Stream(context.Background(), id, false) }
+	pl.Prefetch = srv.PlayerPrefetch // signed in, when YouTube asks for that
+	ytc.OnSignInCheck(func(st yt.SignInCheck) {
+		if st.Active {
+			log.Printf("YouTube is asking this server to sign in (account works: %v, account signed out: %v, no account: %v)", st.AccountWorks, st.AccountFailed, st.NoAccount)
+		} else {
+			log.Printf("YouTube's sign-in check is over")
+		}
+		srv.Broadcast("info", map[string]any{"signInCheck": st})
+	})
 	pl.More = func(last model.Track) []model.Track {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()

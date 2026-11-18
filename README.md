@@ -190,6 +190,16 @@ as it can, by itself:
 2. If that fails too, it plays the song signed in with a **linked YouTube Music account**
    (see below): the account of whoever is playing, then an admin's.
 
+Once the check has come up, the server remembers it for an hour: songs (and
+the next song, looked up ahead of time) go straight to the linked account, so
+they start in the usual time instead of failing the other ways first. After the
+hour it tries without signing in again, and stops using the account as soon as
+YouTube lets it.
+
+When the check is on and nobody's account is linked, or YouTube has signed the
+linked account out, the app tells you once, with a **Link account** button.
+**About** shows whether YouTube is asking right now.
+
 So the one-time fix is to link an account in **Settings → YouTube Music account**.
 No app can switch this check off for good; it's YouTube's decision. A
 server-wide `cookies.txt` in the data folder (or `-cookies <file>`) still works

@@ -393,7 +393,20 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		"bluetooth":  s.BT.Available(),
 		"youtube":    s.YT.Status(ctx),
 		"lastUpdate": s.YT.LastUpdate(),
+		// YouTube's "confirm you're not a bot" check, and whether this
+		// person has a YouTube Music account songs can play with.
+		"signInCheck":   s.YT.SignInCheckState(),
+		"accountLinked": len(s.accountCookies(r)) > 0,
 	})
+}
+
+// PlayerPrefetch gets the stream of the song the server's own player plays
+// next ready, signed in like the player when YouTube asks for that.
+func (s *Server) PlayerPrefetch(id string) {
+	if !model.ValidID(id) {
+		return
+	}
+	s.YT.Stream(yt.WithCookies(context.Background(), s.playerCookies()), id, false)
 }
 
 func (s *Server) ytCall(w http.ResponseWriter, r *http.Request) {
