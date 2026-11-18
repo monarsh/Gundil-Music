@@ -16,6 +16,17 @@ type Settings struct {
 	Language     string `json:"language"`     // YouTube Music language, e.g. en
 	AudioQuality string `json:"audioQuality"` // low | normal | high, for playing on the server
 	AutoUpdate   bool   `json:"autoUpdate"`   // update yt-dlp and ytmusicapi daily
+
+	// With accounts: may people create their own account from the sign-in
+	// screen, and the code they must give (none: anyone on the network).
+	SignUp     bool   `json:"signUp"`
+	InviteCode string `json:"inviteCode"`
+}
+
+// Public is what everyone may see: the invite code is for admins only.
+func (s Settings) Public() Settings {
+	s.InviteCode = ""
+	return s
 }
 
 // Store holds the settings and saves them to a JSON file.
@@ -74,6 +85,7 @@ func clean(s Settings) Settings {
 	if s.AudioQuality == "" {
 		s.AudioQuality = "normal"
 	}
+	s.InviteCode = strings.TrimSpace(s.InviteCode)
 	return s
 }
 
@@ -84,6 +96,9 @@ func Validate(s Settings) error {
 	}
 	if len(s.Language) > 8 || strings.Trim(s.Language, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-") != "" {
 		return errors.New("unknown language")
+	}
+	if len([]rune(s.InviteCode)) > 64 {
+		return errors.New("use an invite code of up to 64 characters")
 	}
 	switch s.AudioQuality {
 	case "low", "normal", "high":

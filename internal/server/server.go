@@ -170,11 +170,17 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		out := map[string]any{"settings": s.Settings.Get()}
+		st := s.Settings.Get()
+		if !s.isAdmin(r) {
+			st = st.Public()
+		}
+		out := map[string]any{"settings": st}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		if data, err := s.YT.Cached(ctx, "options", nil, 24*time.Hour); err == nil {
-			out["options"] = json.RawMessage(data)
+		if s.YT != nil {
+			if data, err := s.YT.Cached(ctx, "options", nil, 24*time.Hour); err == nil {
+				out["options"] = json.RawMessage(data)
+			}
 		}
 		writeJSON(w, out)
 	})
@@ -200,7 +206,7 @@ func (s *Server) Handler() http.Handler {
 		if s.OnSettings != nil && old != now {
 			s.OnSettings(old, now)
 		}
-		s.Broadcast("settings", now)
+		s.Broadcast("settings", now.Public())
 		writeJSON(w, map[string]any{"settings": now})
 	})
 

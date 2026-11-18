@@ -582,6 +582,10 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 .signin-box h1 { font-size: 28px; margin: 12px 0 0; }
 .signin-box p { margin: 0; line-height: 1.45; }
 .signin-box .btn { height: 44px; border-radius: 22px; font-size: 15px; }
+.si-switch { text-align: center; }
+.si-switch a { color: #3ea6ff; font-weight: 500; }
+.set-input { width: 180px; max-width: 48%; flex: none; border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; padding: 8px; background: var(--raised); color: var(--text); font: inherit; outline: 0; }
+.set-input:focus { border-color: #fff; }
 .logo-row { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
 .logo-row svg, .logo-row img { width: 32px; height: 32px; }
 @media (max-width: 600px) { .row-btns { max-width: 100%; } .set-row:has(.row-btns) { flex-wrap: wrap; } }

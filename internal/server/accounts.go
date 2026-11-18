@@ -141,7 +141,7 @@ func (s *Server) accounts(next http.Handler) http.Handler {
 		p := r.URL.Path
 		open := !strings.HasPrefix(p, "/api/") ||
 			(r.Method == "GET" && (p == "/api/info" || p == "/api/session")) ||
-			(r.Method == "POST" && (p == "/api/login" || p == "/api/logout"))
+			(r.Method == "POST" && (p == "/api/login" || p == "/api/logout" || p == "/api/signup"))
 		if strings.HasPrefix(p, "/api/stream/") &&
 			subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("k")), []byte(s.token)) == 1 {
 			open = true // the server's own player
@@ -171,8 +171,45 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// signUp says whether people may create their own account, and whether
+// they need the invite code for it.
+func (s *Server) signUp() (open, needsCode bool) {
+	if s.Settings == nil || !s.accountsOn() {
+		return false, false
+	}
+	st := s.Settings.Get()
+	return st.SignUp, st.SignUp && st.InviteCode != ""
+}
+
+// tooManyFails says whether this address got a password or code wrong too often.
+func (s *Server) tooManyFails(ip string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.fails[ip]
+	if f != nil && time.Since(f.last) > 10*time.Minute {
+		delete(s.fails, ip)
+		return false
+	}
+	return f != nil && f.n >= 5 && time.Since(f.last) < time.Minute
+}
+
+func (s *Server) noteFail(ip string, failed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !failed {
+		delete(s.fails, ip)
+		return
+	}
+	if s.fails[ip] == nil {
+		s.fails[ip] = &loginFails{}
+	}
+	s.fails[ip].n++
+	s.fails[ip].last = time.Now()
+}
+
 func (s *Server) session(r *http.Request) map[string]any {
-	out := map[string]any{"accounts": s.accountsOn(), "user": nil, "admin": s.isAdmin(r)}
+	open, code := s.signUp()
+	out := map[string]any{"accounts": s.accountsOn(), "user": nil, "admin": s.isAdmin(r), "signUp": open, "needsCode": code}
 	if u := s.user(r); u.Name != "" {
 		out["user"] = u
 	}
@@ -230,6 +267,45 @@ func (s *Server) accountRoutes(mux *http.ServeMux) {
 			return
 		}
 		s.setSession(w, token, int(users.SessionLife.Seconds()))
+		r = r.WithContext(context.WithValue(r.Context(), ctxUser{}, u))
+		writeJSON(w, s.session(r))
+	})
+
+	// People creating their own account, when an admin allows it.
+	mux.HandleFunc("POST /api/signup", func(w http.ResponseWriter, r *http.Request) {
+		open, needsCode := s.signUp()
+		if !open {
+			fail(w, http.StatusForbidden, errors.New("this server doesn't let people create their own account; ask an admin to add you"))
+			return
+		}
+		var b struct{ Name, Password, Code string }
+		if err := readBody(r, &b); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		ip := clientIP(r)
+		if s.tooManyFails(ip) {
+			fail(w, http.StatusTooManyRequests, errors.New("too many wrong codes; wait a minute and try again"))
+			return
+		}
+		if needsCode {
+			want := s.Settings.Get().InviteCode
+			ok := subtle.ConstantTimeCompare([]byte(strings.ToLower(strings.TrimSpace(b.Code))), []byte(strings.ToLower(want))) == 1
+			s.noteFail(ip, !ok)
+			if !ok {
+				time.Sleep(500 * time.Millisecond)
+				fail(w, http.StatusForbidden, errors.New("wrong invite code; ask an admin for it"))
+				return
+			}
+		}
+		u, err := s.Users.Create(b.Name, b.Password, false)
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		_, token, _ := s.Users.Login(u.Name, b.Password)
+		s.setSession(w, token, int(users.SessionLife.Seconds()))
+		s.Broadcast("accounts", nil) // admins' account lists update
 		r = r.WithContext(context.WithValue(r.Context(), ctxUser{}, u))
 		writeJSON(w, s.session(r))
 	})

@@ -1971,26 +1971,53 @@ function showSignIn(msg) {
   audio.pause();
   const el = document.createElement('div');
   el.id = 'signin';
+  const host = esc((S.info && S.info.hostname) || location.hostname);
+  const canSignUp = !!S.session.signUp, needsCode = !!S.session.needsCode;
   el.innerHTML = `<form class="signin-box" autocomplete="on">
       <div class="logo-row">${$('.logo') ? $('.logo').innerHTML : 'Gundil Music'}</div>
-      <h1>Sign in</h1>
-      <p class="muted">Sign in to your Gundil Music account on ${esc((S.info && S.info.hostname) || location.hostname)}. Ask whoever runs the server if you don't have one.</p>
+      <h1 class="si-title">Sign in</h1>
+      <p class="muted si-intro"></p>
       <div class="signin-err" hidden></div>
-      <label>Name<input name="name" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+      <label>Name<input name="name" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="32" required></label>
       <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-      <button class="btn white" type="submit">Sign in</button>
+      <label class="si-new" hidden>Password again<input name="again" type="password" autocomplete="new-password"></label>
+      ${needsCode ? '<label class="si-new" hidden>Invite code<input name="code" autocapitalize="off" autocomplete="off" spellcheck="false"></label>' : ''}
+      <button class="btn white si-go" type="submit">Sign in</button>
+      ${canSignUp ? '<p class="si-switch muted">New here? <a href="#" data-si="new">Create an account</a></p>' : ''}
     </form>`;
   document.body.appendChild(el);
   const err = $('.signin-err', el);
   if (msg) { err.textContent = msg; err.hidden = false; }
   const form = $('form', el);
-  form.name.focus();
+  let creating = false;
+  const showMode = make => {
+    creating = make;
+    $('.si-title', el).textContent = make ? 'Create an account' : 'Sign in';
+    $('.si-intro', el).innerHTML = make
+      ? `Make your own Gundil Music account on ${host}: your own playlists, likes and history.${needsCode ? ' Ask whoever runs the server for the invite code.' : ''}`
+      : `Sign in to your Gundil Music account on ${host}.${canSignUp ? '' : ' Ask whoever runs the server if you don\'t have one.'}`;
+    for (const l of $$('.si-new', el)) { l.hidden = !make; const i = $('input', l); i.required = make; }
+    form.password.autocomplete = make ? 'new-password' : 'current-password';
+    $('.si-go', el).textContent = make ? 'Create account' : 'Sign in';
+    const sw = $('.si-switch', el);
+    if (sw) sw.innerHTML = make ? 'Already have an account? <a href="#" data-si="old">Sign in</a>' : 'New here? <a href="#" data-si="new">Create an account</a>';
+    err.hidden = true;
+    form.name.focus();
+  };
+  el.addEventListener('click', e => { const a = e.target.closest('[data-si]'); if (a) { e.preventDefault(); showMode(a.dataset.si === 'new'); } });
+  showMode(false);
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    const b = $('button', form);
+    const b = $('.si-go', form);
+    if (creating && form.password.value !== form.again.value) {
+      err.textContent = 'The two passwords are different';
+      err.hidden = false;
+      return form.again.select();
+    }
     b.disabled = true;
     try {
-      await api('login', 'POST', { name: form.name.value, password: form.password.value });
+      if (creating) await api('signup', 'POST', { name: form.name.value, password: form.password.value, code: form.code ? form.code.value : '' });
+      else await api('login', 'POST', { name: form.name.value, password: form.password.value });
       try { localStorage.removeItem('gundil.queue'); } catch { /* ignore */ }
       location.reload();
     } catch (x) {
@@ -2244,7 +2271,9 @@ function renderSettings(d) {
     <h3>Accounts <span class="muted small">· on this server</span></h3>
     ${(S.people || []).map(u => setRow(u.name + (u.admin ? ' · admin' : ''), u.name === me.name ? 'You' : '',
       u.name === me.name ? '' : `<span class="row-btns"><button class="btn small" data-set="toggle-admin" data-user="${esc(u.name)}" data-admin="${u.admin ? 1 : 0}">${u.admin ? 'Remove admin' : 'Make admin'}</button><button class="btn small" data-set="reset-password" data-user="${esc(u.name)}">Password</button><button class="btn small" data-set="delete-user" data-user="${esc(u.name)}">Delete</button></span>`)).join('')}
-    <div class="set-row"><div class="set-text"><b>Add an account</b><span>For each person using this server</span></div><button class="btn small" data-set="add-user">${icon('add')}Add</button></div>` : '';
+    <div class="set-row"><div class="set-text"><b>Add an account</b><span>For each person using this server</span></div><button class="btn small" data-set="add-user">${icon('add')}Add</button></div>
+    ${setRow('Let people create their own account', 'A "Create an account" link on the sign-in screen. New accounts are never admins.', switchBtn('signUp', !!st.signUp))}
+    ${st.signUp ? setRow('Invite code', st.inviteCode ? 'Only people who know it can create an account' : 'Empty: anyone who can reach this server can create an account', `<input data-set="inviteCode" class="set-input" value="${esc(st.inviteCode || '')}" placeholder="No code" maxlength="64" autocomplete="off" spellcheck="false">`) : ''}` : '';
   const google = `
     <h3>YouTube Music account</h3>
     ${g === null || g === undefined ? '<div class="spinner small"></div>' : !g.linked
@@ -2280,8 +2309,9 @@ async function saveServerSetting(change) {
 }
 
 /* The server's settings changed (here or on another device). */
-function settingsChanged(now) {
+function settingsChanged(now, fromNotice) {
   const old = S.settings;
+  if (fromNotice && old) now = { ...now, inviteCode: old.inviteCode };
   S.settings = now;
   if (old && (old.region !== now.region || old.language !== now.language)) {
     ytCache.clear();
@@ -2298,6 +2328,7 @@ function bindSettings(d) {
     const k = el.dataset.set, v = el.value;
     if (k === 'quality') { local.set('quality', v); toast(S.playing && !isServer() ? 'Audio quality changes from the next song' : 'Audio quality saved'); }
     else if (k === 'videoQuality') { local.set('videoQuality', v); syncVideo(); }
+    else if (k === 'inviteCode') { if (await saveServerSetting({ inviteCode: v })) toast(v.trim() ? 'Invite code saved' : 'Invite code removed: anyone can create an account'); }
     else await saveServerSetting({ [k]: v });
   };
   d.onclick = async e => {
@@ -2316,6 +2347,10 @@ function bindSettings(d) {
     }
     if (k === 'autoplay') { setAutoplay(!S.autoplay); renderSettings(d); }
     else if (k === 'autoUpdate') await saveServerSetting({ autoUpdate: !(S.settings || {}).autoUpdate });
+    else if (k === 'signUp') {
+      const on = !(S.settings || {}).signUp;
+      if (await saveServerSetting({ signUp: on })) toast(on ? 'People can now create their own account' : 'Only admins can add accounts now');
+    }
     else if (k === 'yt-update') await runYtUpdate(el, () => { if (d.open) renderSettings(d); });
     else if (k === 'clear-history') {
       if (await confirmInline(el)) { setUser(await api('history', 'DELETE')); toast('Watch history cleared'); }
@@ -2700,7 +2735,7 @@ function connectEvents() {
     try { S.info = await api('info'); } catch { /* ignore */ }
     if (d && d.youtubeUpdated) youtubeUpdated();
   });
-  es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data)));
+  es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data), true));
   es.addEventListener('accounts', accountsChanged);
   es.addEventListener('bluetooth', () => { if ($('#cast-dlg').open) refreshCast(); });
 }

@@ -204,6 +204,13 @@ To give each person their own playlists, likes, saved albums, history and search
 3. Everyone else signs in on their phone or computer. The Android app and
    browsers stay signed in for a year.
 
+**Letting people create their own account.** Turn on **Settings → Accounts → Let
+people create their own account**, and the sign-in screen gets a **Create an
+account** link. With an **Invite code** set there, only people who know it can
+sign up (it isn't case-sensitive); leave it empty and anyone who can reach the
+server can. Accounts made this way are never admins. No approval is needed:
+they can use Gundil Music right away.
+
 Admins add and delete accounts, reset passwords, make other admins, and change
 the server's settings (region, language, speaker quality, YouTube updates).
 Everyone can change their own password. Playing on the server's speaker or

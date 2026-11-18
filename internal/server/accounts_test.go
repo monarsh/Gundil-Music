@@ -11,6 +11,7 @@ import (
 	"testing/fstest"
 
 	"github.com/monarsh/gundil-music/internal/model"
+	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
 	"github.com/monarsh/gundil-music/internal/users"
 )
@@ -198,5 +199,66 @@ func TestAccountsFlow(t *testing.T) {
 	}
 	if code, _, _ := anon.do("POST", "/api/login", `{"name":"monar","password":"pw1234"}`); code != http.StatusTooManyRequests {
 		t.Fatalf("after 5 wrong passwords: %d", code)
+	}
+}
+
+func TestSignUp(t *testing.T) {
+	dir := t.TempDir()
+	cfg := settings.Load(filepath.Join(dir, "settings.json"), settings.Settings{})
+	s := &Server{Store: store.New(filepath.Join(dir, "library.json")), Users: users.Load(filepath.Join(dir, "users.json")),
+		DataDir: dir, Settings: cfg, Web: fstest.MapFS{"index.html": {Data: []byte("app")}}}
+	h := s.Handler()
+	admin := &client{t: t, h: h}
+	admin.do("POST", "/api/accounts/setup", `{"name":"Monar","password":"pw1234"}`)
+
+	// Off by default.
+	guest := &client{t: t, h: h}
+	if _, m, _ := guest.do("GET", "/api/session", ""); m["signUp"] != false {
+		t.Fatalf("sign-up should be off: %v", m)
+	}
+	if code, _, _ := guest.do("POST", "/api/signup", `{"name":"Ali","password":"pw1234"}`); code != 403 {
+		t.Fatalf("sign-up while off: %d", code)
+	}
+
+	// Open: anyone can make an account, which isn't an admin, and is signed in.
+	if code, _, body := admin.do("PUT", "/api/settings", `{"signUp":true}`); code != 200 {
+		t.Fatalf("turn on: %d %s", code, body)
+	}
+	if _, m, _ := guest.do("GET", "/api/session", ""); m["signUp"] != true || m["needsCode"] != false {
+		t.Fatalf("session: %v", m)
+	}
+	code, m, body := guest.do("POST", "/api/signup", `{"name":"Ali","password":"pw1234"}`)
+	if code != 200 || m["admin"] != false {
+		t.Fatalf("sign-up: %d %s", code, body)
+	}
+	if code, _, _ := guest.do("GET", "/api/state", ""); code != 200 {
+		t.Fatal("not signed in after signing up")
+	}
+	if code, _, _ := guest.do("PUT", "/api/settings", `{"signUp":false}`); code != 403 {
+		t.Fatalf("a signed-up account changed settings: %d", code)
+	}
+	if code, _, _ := (&client{t: t, h: h}).do("POST", "/api/signup", `{"name":"ali","password":"pw1234"}`); code != 400 {
+		t.Fatalf("taken name: %d", code)
+	}
+
+	// With an invite code: needed, compared without case, hidden from non-admins.
+	admin.do("PUT", "/api/settings", `{"inviteCode":" Mango7 "}`)
+	g2 := &client{t: t, h: h}
+	if _, m, _ := g2.do("GET", "/api/session", ""); m["needsCode"] != true {
+		t.Fatalf("needsCode: %v", m)
+	}
+	if code, _, _ := g2.do("POST", "/api/signup", `{"name":"Siti","password":"pw1234","code":"apple"}`); code != 403 {
+		t.Fatalf("wrong code: %d", code)
+	}
+	if code, _, body := g2.do("POST", "/api/signup", `{"name":"Siti","password":"pw1234","code":"mango7"}`); code != 200 {
+		t.Fatalf("right code: %d %s", code, body)
+	}
+	_, _, body = g2.do("GET", "/api/settings", "")
+	if strings.Contains(string(body), "Mango7") {
+		t.Fatal("a non-admin can read the invite code")
+	}
+	_, _, body = admin.do("GET", "/api/settings", "")
+	if !strings.Contains(string(body), "Mango7") {
+		t.Fatalf("the admin can't read the invite code: %s", body)
 	}
 }
