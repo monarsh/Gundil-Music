@@ -284,6 +284,11 @@ Away from home, or with the server off, the app still opens, goes to your
 Downloads and plays them. It offers to reload when the server can be reached
 again. Each device has its own downloads. Settings shows how much space they use.
 
+In a computer's browser, opening the app with the server off needs the page to
+come from `localhost` or `https://` (browsers only keep a page for offline use
+there). Over plain `http://` on your network, downloads still play while the
+page is open. The Android app always opens offline.
+
 ## Crossfade
 
 **Settings → Crossfade** fades each song into the next, over 2 to 12 seconds

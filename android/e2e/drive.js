@@ -40,7 +40,7 @@ const mode = process.argv[2] || 'state';
   };
   if (mode === 'download') {
     // Download the song that's playing, inside the app's WebView.
-    console.log('storage:', await ev(`JSON.stringify({ caches: 'caches' in window, sw: !!(navigator.serviceWorker && navigator.serviceWorker.controller) })`));
+    console.log('storage:', await ev(`JSON.stringify({ indexedDB: !!window.indexedDB, secure: window.isSecureContext })`));
     await ev(`download([current()]); true`);
     const ok = await wait(`Object.keys(dl.list).includes(current().videoId) && !dl.running`, 60);
     console.log('download', ok ? 'done' : 'did not finish', await ev(`JSON.stringify({ songs: Object.keys(dl.list).length, size: dlBytes() })`));

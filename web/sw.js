@@ -1,8 +1,9 @@
 // Keeps the app shell available so the app opens instantly, and also with
-// no connection to the server (then it plays downloaded songs).
+// no connection to the server (then it plays downloaded songs, which the app
+// keeps in IndexedDB). Browsers only run this on https or localhost; the
+// Android app keeps its own copy of the shell.
 // API calls, audio and artwork otherwise always go to the network.
-const CACHE = 'gundil-shell-v3';
-const DOWNLOADS = 'gundil-downloads-v1'; // songs kept for offline: never cleared here
+const CACHE = 'gundil-shell-v4';
 const SHELL = ['./', 'style.css', 'app.js', 'icon.svg', 'icon-192.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {
@@ -23,11 +24,6 @@ const within = (p, ms) => new Promise((ok, fail) => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/_dl/')) {
-    // A downloaded song's cover, kept on this device.
-    e.respondWith(caches.open(DOWNLOADS).then(c => c.match(url.pathname)).then(r => r || new Response('', { status: 404 })));
-    return;
-  }
   if (url.pathname.includes('/api/') || url.pathname.startsWith('/_gundil')) return;
   const net = fetch(e.request).then(res => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }

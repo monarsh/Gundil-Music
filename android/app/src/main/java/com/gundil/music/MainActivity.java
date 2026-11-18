@@ -27,6 +27,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -201,6 +202,12 @@ public class MainActivity extends Activity {
             MainActivity a = instance;
             if (a != null) a.askLogin(handler);
             else handler.cancel();
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
+            // The app's own files come with a saved copy, for opening it with the server off.
+            return Shell.serve(app, prefs(app).getString("server", ""), req);
         }
 
         @Override

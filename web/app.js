@@ -2051,14 +2051,39 @@ async function movePlaylistTrack(id, from, to) {
 /* =========================================================================
    downloads: songs kept on this device, to play without the server
    ========================================================================= */
-const DL_CACHE = 'gundil-downloads-v1';
+/* Kept in IndexedDB: unlike the Cache API it also works when the server is
+   reached over plain http on the local network (as the Android app does). */
+const dlStore = (() => {
+  let opening = null;
+  const db = () => opening || (opening = new Promise((ok, fail) => {
+    const r = indexedDB.open('gundil-downloads', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => { opening = null; fail(r.error); };
+  }));
+  const run = async (mode, fn) => {
+    const d = await db();
+    return new Promise((ok, fail) => {
+      const tx = d.transaction('files', mode);
+      const req = fn(tx.objectStore('files'));
+      tx.oncomplete = () => ok(req.result);
+      tx.onerror = tx.onabort = () => fail(tx.error || new Error('storage failed'));
+    });
+  };
+  return {
+    get: key => run('readonly', s => s.get(key)),
+    put: (key, blob) => run('readwrite', s => s.put(blob, key)),
+    del: key => run('readwrite', s => s.delete(key)),
+  };
+})();
 const dl = {
   list: local.get('downloads', {}), // videoId -> { track, size, img, at }
   urls: new Map(), // videoId -> blob: URL of the downloaded copy
   queue: [], running: false, done: 0, total: 0,
 };
 const dlThumbs = new Map(); // a downloaded song's art URL -> its copy on this device
-for (const [id, d] of Object.entries(dl.list)) if (d.img && d.track.thumb) dlThumbs.set(d.track.thumb, '/_dl/img/' + id);
+const dlThumbsReady = !window.indexedDB ? Promise.resolve() : Promise.all(Object.entries(dl.list).filter(([, d]) => d.img && d.track.thumb).map(([id, d]) =>
+  dlStore.get('img/' + id).then(b => { if (b) dlThumbs.set(d.track.thumb, URL.createObjectURL(b)); }, () => {})));
 const isDownloaded = id => !!dl.list[id];
 const dlCount = () => Object.keys(dl.list).length;
 const srcFor = id => dl.urls.get(id) || streamSrc(id);
@@ -2069,16 +2094,16 @@ const mb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(0.1, n / 1e6)
 /* The downloaded copy as a URL the player can open. */
 async function dlUrl(id) {
   if (dl.urls.has(id)) return dl.urls.get(id);
-  const res = await (await caches.open(DL_CACHE)).match('/_dl/audio/' + id);
-  if (!res) { delete dl.list[id]; saveDl(); return null; } // cleared by the browser
-  const u = URL.createObjectURL(await res.blob());
+  const blob = await dlStore.get('audio/' + id);
+  if (!blob) { delete dl.list[id]; saveDl(); return null; } // cleared by the browser
+  const u = URL.createObjectURL(blob);
   dl.urls.set(id, u);
   return u;
 }
 
 /* Downloads songs one after another, with a running count. */
 function download(tracks) {
-  if (!('caches' in window)) return toast('This browser can\'t keep songs for offline');
+  if (!window.indexedDB) return toast('This browser can\'t keep songs for offline');
   const add = tracks.filter(t => isTrack(t) && t.available !== false && !isDownloaded(t.videoId) && !dl.queue.some(q => q.videoId === t.videoId)).map(slim);
   if (!add.length) return toast(tracks.length > 1 ? 'Already downloaded' : 'Already downloaded');
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -2110,28 +2135,26 @@ async function fetchDownload(t) {
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   const blob = await res.blob();
   if (blob.size < 10000) throw new Error('not audio');
-  const cache = await caches.open(DL_CACHE);
-  await cache.put('/_dl/audio/' + t.videoId, new Response(blob, { headers: { 'Content-Type': blob.type || res.headers.get('Content-Type') || 'audio/mp4' } }));
-  let pic = false;
+  await dlStore.put('audio/' + t.videoId, blob.type ? blob : new Blob([blob], { type: res.headers.get('Content-Type') || 'audio/mp4' }));
+  let pic = null;
   if (t.thumb) {
     try { // the cover, for when there is no connection (some image hosts don't allow reading it)
       const r = await fetch(sized(t.thumb, 226), { mode: 'cors', referrerPolicy: 'no-referrer' });
-      if (r.ok) { await cache.put('/_dl/img/' + t.videoId, new Response(await r.blob(), { headers: { 'Content-Type': r.headers.get('Content-Type') || 'image/jpeg' } })); pic = true; }
+      if (r.ok) { pic = await r.blob(); await dlStore.put('img/' + t.videoId, pic); }
     } catch { /* keep the online cover */ }
   }
-  dl.list[t.videoId] = { track: t, size: blob.size, img: pic, at: Date.now() };
-  if (pic) dlThumbs.set(t.thumb, '/_dl/img/' + t.videoId);
+  dl.list[t.videoId] = { track: t, size: blob.size, img: !!pic, at: Date.now() };
+  if (pic) dlThumbs.set(t.thumb, URL.createObjectURL(pic));
   saveDl();
 }
 
 async function removeDownloads(ids) {
-  const cache = await caches.open(DL_CACHE);
   for (const id of ids) {
     const d = dl.list[id];
     if (!d) continue;
-    await cache.delete('/_dl/audio/' + id);
-    await cache.delete('/_dl/img/' + id);
-    if (d.track.thumb) dlThumbs.delete(d.track.thumb);
+    await dlStore.del('audio/' + id);
+    await dlStore.del('img/' + id);
+    if (d.track.thumb && dlThumbs.has(d.track.thumb)) { URL.revokeObjectURL(dlThumbs.get(d.track.thumb)); dlThumbs.delete(d.track.thumb); }
     const u = dl.urls.get(id);
     if (u && audio.getAttribute('src') !== u) { URL.revokeObjectURL(u); dl.urls.delete(id); }
     delete dl.list[id];
@@ -2177,7 +2200,8 @@ function downloadsView() {
 }
 
 /* No server: play what's downloaded. */
-function startOffline() {
+async function startOffline() {
+  await dlThumbsReady;
   S.offline = true;
   S.info = { youtube: {}, hostname: '' };
   S.server = null;
