@@ -1,6 +1,6 @@
 // Drives the app's WebView over the Chrome DevTools protocol (adb-forwarded
 // to localhost:9222): plays a song, then reports playback state on demand.
-//   node drive.js play | node drive.js state | node drive.js check (exit 2 unless playing)
+//   node drive.js play | state | check (exit 2 unless playing) | download | offline
 const mode = process.argv[2] || 'state';
 (async () => {
   // The WebView's debugging target can take a while to appear after launch.
@@ -30,6 +30,34 @@ const mode = process.argv[2] || 'state';
     console.log('page:', page.url);
     await ev(`document.querySelector('.qp-grid .row').click(); true`);
     await new Promise(r => setTimeout(r, 8000));
+  }
+  const wait = async (expr, secs) => {
+    for (let i = 0; i < secs * 2; i++) {
+      try { if (await ev(expr) === true) return true; } catch { /* page reloading */ }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return false;
+  };
+  if (mode === 'download') {
+    // Download the song that's playing, inside the app's WebView.
+    console.log('storage:', await ev(`JSON.stringify({ caches: 'caches' in window, sw: !!(navigator.serviceWorker && navigator.serviceWorker.controller) })`));
+    await ev(`download([current()]); true`);
+    const ok = await wait(`Object.keys(dl.list).includes(current().videoId) && !dl.running`, 60);
+    console.log('download', ok ? 'done' : 'did not finish', await ev(`JSON.stringify({ songs: Object.keys(dl.list).length, size: dlBytes() })`));
+    ws.close();
+    process.exit(ok ? 0 : 2);
+  }
+  if (mode === 'offline') {
+    // The server is off: reload; the app must open its Downloads and play one.
+    await ev(`location.reload(); true`);
+    await new Promise(r => setTimeout(r, 3000));
+    const off = await wait(`typeof S !== 'undefined' && S.offline === true && !!document.querySelector('.dl-actions [data-act=list-play]')`, 40);
+    if (!off) { console.error('offline mode did not start:', await ev(`document.body.innerText.slice(0, 200)`)); ws.close(); process.exit(2); }
+    await ev(`document.querySelector('.dl-actions [data-act=list-play]').click(); true`);
+    const playing = await wait(`!audio.paused && audio.currentTime > 1 && audio.src.startsWith('blob:')`, 20);
+    console.log('offline', playing ? 'playing a download' : 'NOT playing', await state());
+    ws.close();
+    process.exit(playing ? 0 : 2);
   }
   if (mode === 'check') {
     // Is music still playing? The position moves on (or the next song started).

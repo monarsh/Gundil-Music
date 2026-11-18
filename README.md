@@ -20,7 +20,9 @@ What you get, laid out like YouTube Music:
 - **Import playlists** from YouTube Music or YouTube by link, or your private ones and Liked Music from your linked account
 - **Accounts**: optional sign-in, so each person gets their own library, playlists and history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
-- **Background play**: keeps playing when the app is minimised or the screen is off, for free
+- **Background play**: keeps playing when the app is minimised, swiped away from Recents or the screen is off, for free
+- **Downloads**: keep songs, albums and playlists on your phone or computer and play them with no connection
+- **Crossfade** between songs (2–12 seconds, per device)
 - **Server or client**: every Windows, Linux desktop, AppImage and Pi build can be the server or connect to another Gundil Music server
 
 Gundil Music is not affiliated with YouTube or Google. It uses YouTube Music's
@@ -269,6 +271,24 @@ server asks [LRCLIB](https://lrclib.net), a free open database of timed lyrics. 
 only uses lyrics for a song of the same length (within 3 seconds), so a live or
 extended version's timings aren't used for the original. That lookup sends the
 song's title, artist, album and length to lrclib.net, nothing else.
+
+## Downloads and offline
+
+Download a song with ⋮ → **Download**, or a whole album or playlist with the
+download button next to Play. Songs are kept on the device you're using, inside
+the app (or the browser on a computer), at that device's audio quality, with a ✓
+next to them. Find them under **Library → Downloads**, where you can also remove
+them. They play from the device even when the server can be reached.
+
+Away from home, or with the server off, the app still opens, goes to your
+Downloads and plays them. It offers to reload when the server can be reached
+again. Each device has its own downloads. Settings shows how much space they use.
+
+## Crossfade
+
+**Settings → Crossfade** fades each song into the next, over 2 to 12 seconds
+(off by default). It's set per device, for music playing on that device. It
+isn't used in Video mode, with repeat one, or when the server's speaker plays.
 
 ## Security
 

@@ -228,7 +228,7 @@ jobs:
           go build -o "$RUNNER_TEMP/gundil-music" .
           nohup "$RUNNER_TEMP/gundil-music" -addr 127.0.0.1:8338 -data "$RUNNER_TEMP/data" -helper android/e2e/fake_helper.py -open=false > "$RUNNER_TEMP/server.log" 2>&1 &
           for i in $(seq 20); do curl -sf localhost:8338/api/info && break; sleep 1; done
-      - name: Play, minimise, lock and swipe away in the emulator
+      - name: Play, minimise, lock, swipe away and play offline in the emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34

@@ -2,7 +2,8 @@
 # Runs inside an Android emulator job: installs the debug APK, connects it to
 # a Gundil Music test server on the host (10.0.2.2), plays a song, then
 # minimises the app, turns the screen off and swipes it away from Recents,
-# checking it keeps playing throughout. Logs and screenshots go to android/e2e/out.
+# checking it keeps playing throughout. Then it downloads a song, stops the
+# server, and checks the app opens offline and plays the download. Logs and screenshots go to android/e2e/out.
 set -uo pipefail
 cd "$(dirname "$0")"
 out=out
@@ -84,6 +85,13 @@ else
   shot 6-reopened
   forward; node drive.js check && echo "reopened on the playing page" || { echo "::error::reopening the app lost the music"; fail=1; }
 fi
+
+echo "== download a song in the app, then play it with the server off"
+forward; node drive.js download || { echo "::error::downloading a song failed in the app"; fail=1; }
+pkill -x gundil-music && echo "test server stopped"
+sleep 2
+forward; node drive.js offline || { echo "::error::the app didn't play downloads without the server"; fail=1; }
+shot 7-offline
 
 adb shell dumpsys activity services "$pkg" > "$out/services.txt" 2>&1 || true
 adb logcat -d > "$out/logcat.txt"
