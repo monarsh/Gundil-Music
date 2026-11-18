@@ -156,7 +156,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if res.Updated {
-			s.Broadcast("info", nil)
+			s.Broadcast("info", map[string]bool{"youtubeUpdated": true})
 		}
 		writeJSON(w, res)
 	})

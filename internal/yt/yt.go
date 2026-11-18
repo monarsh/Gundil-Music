@@ -59,10 +59,8 @@ type Client struct {
 	updating sync.Mutex // one YouTube library update at a time
 
 	mu      sync.Mutex
-	stdin   io.WriteCloser
-	cmd     *exec.Cmd
-	done    chan struct{} // closed when the current helper's reader exits
-	pending map[int]chan reply
+	cur     *proc          // the helper new calls go to
+	old     map[*proc]bool // helpers finishing their calls after a restart
 	next    int
 	lastErr string
 
@@ -103,8 +101,8 @@ func New(python, script, dataDir string) (*Client, error) {
 	}
 	return &Client{
 		python: python, script: script, dataDir: dataDir,
-		pending: map[int]chan reply{},
-		cache:   map[string]cached{}, flights: map[string]*flight{}, streams: map[string]*Stream{},
+		old:   map[*proc]bool{},
+		cache: map[string]cached{}, flights: map[string]*flight{}, streams: map[string]*Stream{},
 	}, nil
 }
 
@@ -139,6 +137,15 @@ func bundledPython() string {
 	return ""
 }
 
+// proc is one running helper process and the calls waiting on it.
+type proc struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	pending map[int]chan reply // guarded by Client.mu
+	done    chan struct{}      // closed when its output ends
+}
+
+// start runs a new helper and makes it current. c.mu must be held.
 func (c *Client) start() error {
 	if c.python == "" {
 		return errors.New("Python 3 was not found on the server. Install it, then run: pip install -U ytmusicapi \"yt-dlp[default]\"")
@@ -161,9 +168,8 @@ func (c *Client) start() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not start the YouTube helper: %w", err)
 	}
-	c.cmd, c.stdin = cmd, stdin
-	done := make(chan struct{})
-	c.done = done
+	p := &proc{cmd: cmd, stdin: stdin, pending: map[int]chan reply{}, done: make(chan struct{})}
+	c.cur = p
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
@@ -171,13 +177,13 @@ func (c *Client) start() error {
 		}
 	}()
 	go func() {
-		c.readLoop(cmd, stdout)
-		close(done)
+		c.readLoop(p, stdout)
+		close(p.done)
 	}()
 	return nil
 }
 
-func (c *Client) readLoop(cmd *exec.Cmd, stdout io.Reader) {
+func (c *Client) readLoop(p *proc, stdout io.Reader) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
@@ -186,42 +192,44 @@ func (c *Client) readLoop(cmd *exec.Cmd, stdout io.Reader) {
 			continue
 		}
 		c.mu.Lock()
-		ch := c.pending[r.ID]
-		delete(c.pending, r.ID)
+		ch := p.pending[r.ID]
+		delete(p.pending, r.ID)
 		c.mu.Unlock()
 		if ch != nil {
 			ch <- r
 		}
 	}
-	cmd.Wait()
+	p.cmd.Wait()
 	c.mu.Lock()
-	if c.cmd == cmd {
-		c.cmd, c.stdin = nil, nil
+	if c.cur == p {
+		c.cur = nil
+		log.Printf("yt: helper exited")
 	}
-	for id, ch := range c.pending {
+	delete(c.old, p)
+	for id, ch := range p.pending {
 		close(ch)
-		delete(c.pending, id)
+		delete(p.pending, id)
 	}
 	c.mu.Unlock()
-	log.Printf("yt: helper exited")
 }
 
 // Call runs one helper method without caching.
 func (c *Client) Call(ctx context.Context, method string, args map[string]string) (json.RawMessage, error) {
 	c.mu.Lock()
-	if c.cmd == nil {
+	if c.cur == nil {
 		if err := c.start(); err != nil {
 			c.lastErr = err.Error()
 			c.mu.Unlock()
 			return nil, err
 		}
 	}
+	p := c.cur
 	c.next++
 	id := c.next
 	ch := make(chan reply, 1)
-	c.pending[id] = ch
+	p.pending[id] = ch
 	msg, _ := json.Marshal(map[string]any{"id": id, "method": method, "args": args})
-	_, err := c.stdin.Write(append(msg, '\n'))
+	_, err := p.stdin.Write(append(msg, '\n'))
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -245,17 +253,17 @@ func (c *Client) Call(ctx context.Context, method string, args map[string]string
 		c.mu.Unlock()
 		return r.Result, nil
 	case <-ctx.Done():
-		c.forget(id)
+		c.forget(p, id)
 		return nil, ctx.Err()
 	case <-timeout.C:
-		c.forget(id)
+		c.forget(p, id)
 		return nil, errors.New("YouTube Music took too long to answer")
 	}
 }
 
-func (c *Client) forget(id int) {
+func (c *Client) forget(p *proc, id int) {
 	c.mu.Lock()
-	delete(c.pending, id)
+	delete(p.pending, id)
 	c.mu.Unlock()
 }
 
@@ -458,23 +466,31 @@ func (c *Client) Status(ctx context.Context) map[string]any {
 	return st
 }
 
-// Restart stops the helper and waits for it to exit; the next call starts a
-// fresh one, which picks up newly installed Python packages.
+// Restart switches to a fresh helper, which picks up newly installed Python
+// packages and changed settings. New calls go to the new helper at once;
+// the old one finishes the calls it was answering, then exits.
 func (c *Client) Restart() {
 	c.mu.Lock()
-	done := c.done
-	if c.stdin != nil {
-		c.stdin.Close()
-	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		c.cmd.Process.Kill()
+	old := c.cur
+	c.cur = nil
+	if old != nil {
+		// Start the new helper straight away, so nobody waits for it, and
+		// let the old one finish the calls it's working on.
+		c.old[old] = true
+		old.stdin.Close() // the helper stops reading and exits once its calls are answered
+		if err := c.start(); err != nil {
+			c.lastErr = err.Error()
+		}
 	}
 	c.mu.Unlock()
-	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-		}
+	if old != nil {
+		go func() {
+			select {
+			case <-old.done:
+			case <-time.After(2 * time.Minute):
+				old.cmd.Process.Kill()
+			}
+		}()
 	}
 	c.cmu.Lock()
 	c.cache = map[string]cached{}
@@ -486,10 +502,17 @@ func (c *Client) Restart() {
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stdin != nil {
-		c.stdin.Close()
+	all := []*proc{}
+	if c.cur != nil {
+		all = append(all, c.cur)
 	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		c.cmd.Process.Kill()
+	for p := range c.old {
+		all = append(all, p)
+	}
+	for _, p := range all {
+		p.stdin.Close()
+		if p.cmd.Process != nil {
+			p.cmd.Process.Kill()
+		}
 	}
 }

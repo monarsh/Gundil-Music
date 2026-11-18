@@ -292,6 +292,7 @@ function applyServer(st) {
   S.autoplay = st.autoplay;
   S.sleep = { at: st.sleepAt || 0, end: !!st.sleepEnd };
   if (st.error && st.error !== S.lastError) toast(st.error);
+  if (st.playing) S.stuck = '';
   S.lastError = st.error;
   renderPlayer();
 }
@@ -580,7 +581,7 @@ audio.addEventListener('timeupdate', () => {
   if (S.sleep.at && Date.now() >= S.sleep.at) sleepNow(); // timers can be slowed in the background
 });
 audio.addEventListener('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
-audio.addEventListener('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; renderPlayer(); } });
+audio.addEventListener('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
 audio.addEventListener('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
 audio.addEventListener('pause', () => { if (!isServer()) { S.paused = true; renderPlayer(); } });
 audio.addEventListener('loadedmetadata', () => {
@@ -617,7 +618,7 @@ audio.addEventListener('error', async () => {
   toast(why && /sign in/i.test(why) ? why : `Couldn't play “${t ? t.title : 'this song'}”`,
     why && !/sign in/i.test(why) ? { label: 'Update', run: () => aboutDialog() } : undefined);
   if (errorsInRow < 4 && S.index + 1 < S.queue.length) setTimeout(() => { if (!isServer()) { S.index++; loadLocal(true); } }, 1200);
-  else { S.paused = true; renderPlayer(); }
+  else { S.paused = true; S.stuck = t ? t.videoId : ''; renderPlayer(); }
 });
 
 /* Lock screen, notification and Bluetooth headset buttons. */
@@ -1435,7 +1436,7 @@ async function route(keepScroll) {
   const view = $('#view');
   const main = $('#main');
   const spin = setTimeout(() => { if (n === routeN) view.innerHTML = '<div class="spinner"></div>'; }, 120);
-  let html;
+  let html, failed = false;
   try {
     switch (page) {
       case 'explore':
@@ -1450,10 +1451,12 @@ async function route(keepScroll) {
       default: html = await viewHome();
     }
   } catch (e) {
+    failed = true;
     html = statusBanner() + emptyHTML('info', 'Something went wrong', esc(e.message), `<button class="btn" data-act="retry">${icon('refresh')}Retry</button>`);
   }
   clearTimeout(spin);
   if (n !== routeN) return;
+  S.pageFailed = failed || !!(S.info.youtube && !S.info.youtube.ok);
   const top = main.scrollTop;
   view.innerHTML = html;
   main.scrollTop = keepScroll ? top : (scrolls.get(hash) || 0);
@@ -1764,6 +1767,27 @@ function confirmDialog(title, text, ok) {
   const d = dialog(`<form method="dialog"><h2>${esc(title)}</h2><p class="muted">${esc(text)}</p>
     <div class="dlg-actions"><button class="btn" value="cancel">Cancel</button><button class="btn white" value="ok">${esc(ok)}</button></div></form>`);
   return formResult(d).then(form => !!form);
+}
+
+/* New yt-dlp / ytmusicapi are running on the server: no reload needed, but
+   whatever failed before gets another go, and open screens show the new versions. */
+function youtubeUpdated() {
+  ytCache.clear();
+  const y = S.info.youtube || {};
+  if (!S.ytUpdating) toast(`YouTube support was updated${y.yt_dlp ? ` (yt-dlp ${y.yt_dlp})` : ''}`);
+  const d = $('#dlg');
+  if (d.open && $('.settings', d)) renderSettings(d);
+  else if (d.open && $('[data-act="yt-update"]', d) && !S.ytUpdating) aboutDialog();
+  if (S.pageFailed) route(true);
+  const t = current();
+  if (S.stuck && t && t.videoId === S.stuck) {
+    // The song that couldn't be played: try it again.
+    S.stuck = '';
+    errorsInRow = 0;
+    if (isServer()) srv('jump', { index: S.index }); else loadLocal(true);
+  } else if (isServer() && S.lastError && !S.playing && t) {
+    srv('jump', { index: S.index });
+  }
 }
 
 function aboutDialog() {
@@ -2217,6 +2241,7 @@ function confirmInline(btn, ask = 'Tap again to clear') {
 }
 
 async function runYtUpdate(b, done) {
+  S.ytUpdating = true; // this device shows its own result
   b.disabled = true;
   const was = b.innerHTML;
   b.innerHTML = '<span class="spinner small"></span>Updating… this can take a minute';
@@ -2230,6 +2255,7 @@ async function runYtUpdate(b, done) {
     b.innerHTML = was;
   }
   b.disabled = false;
+  setTimeout(() => { S.ytUpdating = false; }, 3000); // after the server's own notice arrives
 }
 
 /* =========================================================================
@@ -2568,7 +2594,12 @@ function connectEvents() {
   es.addEventListener('open', () => { serverQVer = -1; }); // the server may have restarted
   es.addEventListener('player', e => applyServer(JSON.parse(e.data)));
   es.addEventListener('state', async () => { try { setUser(await api('state')); } catch { /* ignore */ } });
-  es.addEventListener('info', async () => { try { S.info = await api('info'); } catch { /* ignore */ } });
+  es.addEventListener('info', async e => {
+    let d = null;
+    try { d = JSON.parse(e.data); } catch { /* ignore */ }
+    try { S.info = await api('info'); } catch { /* ignore */ }
+    if (d && d.youtubeUpdated) youtubeUpdated();
+  });
   es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data)));
   es.addEventListener('accounts', accountsChanged);
   es.addEventListener('bluetooth', () => { if ($('#cast-dlg').open) refreshCast(); });

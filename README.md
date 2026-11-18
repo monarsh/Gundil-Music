@@ -159,8 +159,13 @@ AppImage, the Windows zip, a Pi and Termux alike. To update right away:
 - Pi / Orange Pi: `bash update-youtube.sh` (updates, then restarts the service)
 - anywhere else: `gundil-music -update-youtube`
 
-Then restart the server, unless you used the button, which takes effect
-immediately. Turn the daily check off in Settings or with `-auto-update=false`.
+After the daily update or the button, nothing needs restarting or reloading.
+The server switches to a fresh YouTube helper straight away and lets the old one
+finish whatever it was fetching, so songs that are playing carry on. Open apps
+are told about it: they show the new versions, reload a page that had failed,
+and retry a song that couldn't be played. After `-update-youtube` or
+`update-youtube.sh` from the command line, restart the server (the script does
+this for you). Turn the daily check off in Settings or with `-auto-update=false`.
 
 ### "Sign in to confirm you're not a bot"
 

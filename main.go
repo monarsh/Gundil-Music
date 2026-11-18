@@ -222,7 +222,7 @@ func main() {
 				} else {
 					log.Printf("YouTube auto-update: %s", r.Message)
 					if r.Updated {
-						srv.Broadcast("info", nil)
+						srv.Broadcast("info", map[string]bool{"youtubeUpdated": true})
 					}
 				}
 			}
