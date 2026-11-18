@@ -24,12 +24,15 @@ import (
 	"github.com/monarsh/gundil-music/internal/player"
 	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
+	"github.com/monarsh/gundil-music/internal/users"
 	"github.com/monarsh/gundil-music/internal/yt"
 )
 
 type Server struct {
 	YT      *yt.Client
-	Store   *store.Store
+	Store   *store.Store // the shared library, used until accounts are made
+	Users   *users.Store
+	DataDir string
 	Player  *player.Player
 	BT      *bluetooth.Manager
 	Web     fs.FS
@@ -43,9 +46,12 @@ type Server struct {
 
 	token string // lets mpv on this machine fetch streams when auth is on
 
-	mu       sync.Mutex
-	clients  map[chan string]struct{}
-	sentQVer int
+	mu         sync.Mutex
+	clients    map[chan string]string // live-update channel -> account ("" without accounts)
+	sentQVer   int
+	libs       map[string]*store.Store
+	playerUser string // whose library the server's speaker plays for (history, dislikes)
+	fails      map[string]*loginFails
 }
 
 // endpoint describes a YouTube Music method the app may call.
@@ -128,7 +134,9 @@ func readBody(r *http.Request, v any) error {
 }
 
 func (s *Server) Handler() http.Handler {
-	s.clients = map[chan string]struct{}{}
+	s.clients = map[chan string]string{}
+	s.libs = map[string]*store.Store{}
+	s.fails = map[string]*loginFails{}
 	b := make([]byte, 16)
 	rand.Read(b)
 	s.token = hex.EncodeToString(b)
@@ -137,6 +145,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/info", s.info)
 	mux.HandleFunc("GET /api/yt/{method}", s.ytCall)
 	mux.HandleFunc("POST /api/youtube/update", func(w http.ResponseWriter, r *http.Request) {
+		if !s.requireAdmin(w, r) {
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
 		defer cancel()
 		res, err := s.YT.Update(ctx, r.URL.Query().Get("force") == "1")
@@ -153,7 +164,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("id"); model.ValidID(id) {
 			f := s.format(r)
-			go s.YT.StreamFormat(context.Background(), id, f, false)
+			go s.YT.StreamFormat(yt.WithCookies(context.Background(), s.accountCookies(r)), id, f, false)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -167,6 +178,9 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, out)
 	})
 	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		if !s.requireAdmin(w, r) {
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 		if err != nil {
 			fail(w, 400, err)
@@ -199,39 +213,39 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.Store.SetRating(b.Track, b.Rating); err != nil {
+		if err := s.lib(r).SetRating(b.Track, b.Rating); err != nil {
 			fail(w, 400, err)
 			return
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("POST /api/history", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
 			Track model.Track `json:"track"`
 		}
 		if readBody(r, &b) == nil {
-			s.Store.AddHistory(b.Track)
+			s.lib(r).AddHistory(b.Track)
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("DELETE /api/history", func(w http.ResponseWriter, r *http.Request) {
-		s.Store.ClearHistory()
-		s.changedState(w)
+		s.lib(r).ClearHistory()
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("POST /api/searches", func(w http.ResponseWriter, r *http.Request) {
 		var b struct{ Q string }
 		if readBody(r, &b) == nil {
-			s.Store.AddSearch(b.Q)
+			s.lib(r).AddSearch(b.Q)
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("DELETE /api/searches", func(w http.ResponseWriter, r *http.Request) {
 		if q := r.URL.Query().Get("q"); q != "" {
-			s.Store.RemoveSearch(q)
+			s.lib(r).RemoveSearch(q)
 		} else {
-			s.Store.ClearSearches()
+			s.lib(r).ClearSearches()
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("POST /api/saved", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -242,11 +256,11 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.Store.SetSaved(b.Item, b.Saved); err != nil {
+		if err := s.lib(r).SetSaved(b.Item, b.Saved); err != nil {
 			fail(w, 400, err)
 			return
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("POST /api/playlists", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -258,13 +272,13 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		p, err := s.Store.CreatePlaylist(b.Name, b.Description, b.Tracks)
+		p, err := s.lib(r).CreatePlaylist(b.Name, b.Description, b.Tracks)
 		if err != nil {
 			fail(w, 400, err)
 			return
 		}
-		s.Broadcast("state", nil)
-		writeJSON(w, map[string]any{"id": p.ID, "state": json.RawMessage(s.Store.JSON())})
+		s.stateChanged(r)
+		writeJSON(w, map[string]any{"id": p.ID, "state": json.RawMessage(s.lib(r).JSON())})
 	})
 	mux.HandleFunc("PUT /api/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -276,11 +290,11 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.Store.UpdatePlaylist(r.PathValue("id"), b.Name, b.Description, b.Tracks); err != nil {
+		if err := s.lib(r).UpdatePlaylist(r.PathValue("id"), b.Name, b.Description, b.Tracks); err != nil {
 			fail(w, 404, err)
 			return
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 	mux.HandleFunc("POST /api/playlists/{id}/add", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -290,20 +304,20 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		n, err := s.Store.AddToPlaylist(r.PathValue("id"), b.Tracks)
+		n, err := s.lib(r).AddToPlaylist(r.PathValue("id"), b.Tracks)
 		if err != nil {
 			fail(w, 404, err)
 			return
 		}
-		s.Broadcast("state", nil)
-		writeJSON(w, map[string]any{"added": n, "state": json.RawMessage(s.Store.JSON())})
+		s.stateChanged(r)
+		writeJSON(w, map[string]any{"added": n, "state": json.RawMessage(s.lib(r).JSON())})
 	})
 	mux.HandleFunc("DELETE /api/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.Store.DeletePlaylist(r.PathValue("id")); err != nil {
+		if err := s.lib(r).DeletePlaylist(r.PathValue("id")); err != nil {
 			fail(w, 404, err)
 			return
 		}
-		s.changedState(w)
+		s.changedState(w, r)
 	})
 
 	mux.HandleFunc("GET /api/player", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.Player.State()) })
@@ -328,14 +342,16 @@ func (s *Server) Handler() http.Handler {
 		static.ServeHTTP(w, r)
 	}))
 
+	s.accountRoutes(mux)
+	var h http.Handler = s.accounts(mux)
 	if s.Auth == "" {
-		return mux
+		return h
 	}
 	user, pass, _ := strings.Cut(s.Auth, ":")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/stream/") &&
 			subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("k")), []byte(s.token)) == 1 {
-			mux.ServeHTTP(w, r)
+			h.ServeHTTP(w, r)
 			return
 		}
 		u, p, ok := r.BasicAuth()
@@ -345,7 +361,7 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		h.ServeHTTP(w, r)
 	})
 }
 
@@ -409,7 +425,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	f := s.format(r)
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		st, err := s.YT.StreamFormat(r.Context(), id, f, attempt > 0)
+		st, err := s.YT.StreamFormat(yt.WithCookies(r.Context(), s.accountCookies(r)), id, f, attempt > 0)
 		if err != nil {
 			lastErr = err
 			break
@@ -494,14 +510,14 @@ func (s *Server) format(r *http.Request) yt.Format {
 
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(s.Store.JSON())
+	w.Write(s.lib(r).JSON())
 }
 
 // changedState tells other devices the library changed and returns it.
-func (s *Server) changedState(w http.ResponseWriter) {
-	s.Broadcast("state", nil)
+func (s *Server) changedState(w http.ResponseWriter, r *http.Request) {
+	s.stateChanged(r)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(s.Store.JSON())
+	w.Write(s.lib(r).JSON())
 }
 
 func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
@@ -529,6 +545,12 @@ func (s *Server) playerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.Player
 	var err error
+	if a := r.PathValue("action"); a == "queue" || a == "insert" || a == "jump" {
+		// The speaker now plays for this account: its history and dislikes.
+		s.mu.Lock()
+		s.playerUser = s.user(r).Name
+		s.mu.Unlock()
+	}
 	switch r.PathValue("action") {
 	case "queue":
 		err = p.SetQueue(b.Tracks, b.Index, b.Play, b.Source)
@@ -615,7 +637,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	ch := make(chan string, 64)
 	s.mu.Lock()
-	s.clients[ch] = struct{}{}
+	s.clients[ch] = s.user(r).Name
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()

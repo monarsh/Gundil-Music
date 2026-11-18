@@ -36,6 +36,9 @@ const ICONS = {
   left: 'M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z',
   right: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z',
+  account: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 4c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm0 14c-2.03 0-4.43-.82-6.14-2.88a9.947 9.947 0 0112.28 0C16.43 19.18 14.03 20 12 20z',
+  logout: 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z',
+  import: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
   check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
   playlistAdd: 'M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z',
   playNext: 'M19 9H2v2h17V9zm0-4H2v2h17V5zM2 15h13v-2H2v2zm15-2v6l5-3-5-3z',
@@ -106,6 +109,7 @@ async function api(path, method = 'GET', body) {
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.signin) showSignIn();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
@@ -144,6 +148,8 @@ const local = {
    ========================================================================= */
 const S = {
   info: { youtube: {} },
+  session: { accounts: false, user: null, admin: true },
+  google: null,
   user: { playlists: [], liked: [], disliked: [], saved: [], history: [], searches: [] },
   liked: new Set(), disliked: new Set(), saved: new Set(),
   output: local.get('output', null), // 'local' | 'server'
@@ -1400,6 +1406,7 @@ async function viewLibrary(tab) {
       ...u.saved.filter(x => x.type === 'playlist'),
     ];
     body = `<div class="card-grid"><button class="card card-new" data-act="new-playlist"><div class="card-thumb">${icon('add')}</div><div class="card-title">New playlist</div></button>
+      <button class="card card-new" data-act="import-playlist"><div class="card-thumb">${icon('import')}</div><div class="card-title">Import playlist</div></button>
       ${items.map(x => card(x, '', -1)).join('')}</div>`;
   }
   return `<h1 class="page-title">Library</h1><div class="chips">${tabs.map(([t, label]) => `<a class="chip${t === tab ? ' on' : ''}" href="#/library/${t}">${label}</a>`).join('')}</div><div style="margin-top:24px">${body}</div>`;
@@ -1517,6 +1524,10 @@ async function updateSuggest() {
 function submitSearch(q) {
   q = q.trim();
   if (!q) return;
+  if (/^(https?:\/\/)?([a-z]+\.)?(youtube\.com|youtu\.be)\//i.test(q) && /[?&]list=|\/browse\//.test(q)) {
+    $('#search').blur();
+    return void importDialog(q);
+  }
   clearTimeout(suggestTimer);
   suggestN++;
   closeSuggest();
@@ -1640,6 +1651,7 @@ function itemMenu(it, anchor) {
     { icon: 'queue', label: 'Add to queue', run: async () => insert(await tracksOf(it), false) },
     it.own ? null : { icon: saved ? 'libDone' : 'libAdd', label: saved ? 'Remove from library' : 'Save to library', run: () => setSaved(it, !saved) },
     { icon: 'playlistAdd', label: 'Save to playlist', run: async () => saveToPlaylist(await tracksOf(it)) },
+    it.own ? null : { icon: 'import', label: 'Import as my playlist', run: () => importLink(it.type === 'album' ? `https://music.youtube.com/browse/${it.id}` : `https://music.youtube.com/playlist?list=${it.id}`) },
     it.own ? null : { icon: 'share', label: 'Share', run: () => share(it.type === 'album' && it.playlistId ? `https://music.youtube.com/playlist?list=${it.playlistId}` : it.type === 'album' ? `https://music.youtube.com/browse/${it.id}` : `https://music.youtube.com/playlist?list=${it.id}`) },
   ];
   showMenu(items, anchor, menuHead(it.thumb, it.title, it.subtitle || '', it.type === 'artist'));
@@ -1841,6 +1853,219 @@ async function movePlaylistTrack(id, from, to) {
 }
 
 /* =========================================================================
+   accounts
+   ========================================================================= */
+function renderAvatar() {
+  const u = S.session.user;
+  const a = $('.avatar');
+  a.textContent = u ? (u.name.trim()[0] || 'G').toUpperCase() : 'G';
+  a.title = u ? `Signed in as ${u.name}` : '';
+}
+
+/* The whole-page sign-in form, shown once accounts exist and nobody is signed in. */
+function showSignIn(msg) {
+  if ($('#signin')) return;
+  audio.pause();
+  const el = document.createElement('div');
+  el.id = 'signin';
+  el.innerHTML = `<form class="signin-box" autocomplete="on">
+      <div class="logo-row">${$('.logo') ? $('.logo').innerHTML : 'Gundil Music'}</div>
+      <h1>Sign in</h1>
+      <p class="muted">Sign in to your Gundil Music account on ${esc((S.info && S.info.hostname) || location.hostname)}. Ask whoever runs the server if you don't have one.</p>
+      <div class="signin-err" hidden></div>
+      <label>Name<input name="name" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn white" type="submit">Sign in</button>
+    </form>`;
+  document.body.appendChild(el);
+  const err = $('.signin-err', el);
+  if (msg) { err.textContent = msg; err.hidden = false; }
+  const form = $('form', el);
+  form.name.focus();
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const b = $('button', form);
+    b.disabled = true;
+    try {
+      await api('login', 'POST', { name: form.name.value, password: form.password.value });
+      try { localStorage.removeItem('gundil.queue'); } catch { /* ignore */ }
+      location.reload();
+    } catch (x) {
+      err.textContent = x.message;
+      err.hidden = false;
+      b.disabled = false;
+      form.password.select();
+    }
+  });
+}
+
+async function signOut() {
+  try { await api('logout', 'POST', {}); } catch { /* ignore */ }
+  try { localStorage.removeItem('gundil.queue'); } catch { /* ignore */ }
+  location.reload();
+}
+
+/* Accounts were set up, changed or removed (here or on another device). */
+async function accountsChanged() {
+  let now;
+  try { now = await api('session'); } catch { return; }
+  const was = S.session;
+  S.session = now;
+  if (now.accounts && !now.user) return showSignIn(was.user ? 'You were signed out.' : 'Accounts were set up on this server. Sign in to continue.');
+  if (!was.accounts && now.accounts) return location.reload();
+  renderAvatar();
+  if ($('#dlg').open && $('.settings', $('#dlg'))) settingsDialog();
+}
+
+/* A small form in the shared dialog. fields: [name, label, type, value]. Resolves with the values or null. */
+function askForm(title, intro, fields, okLabel) {
+  const d = dialog(`<form method="dialog" class="ask"><h2>${esc(title)}</h2>${intro ? `<p class="muted">${intro}</p>` : ''}
+    ${fields.map(([n, label, type = 'text', v = '']) => type === 'checkbox'
+      ? `<label class="check"><input type="checkbox" name="${n}"${v ? ' checked' : ''}> ${esc(label)}</label>`
+      : `<label>${esc(label)}<input name="${n}" type="${type}" value="${esc(v)}" ${type === 'password' ? 'autocomplete="new-password"' : 'autocomplete="off"'}></label>`).join('')}
+    <div class="ask-err" hidden></div>
+    <div class="dlg-actions"><button class="btn" value="cancel">Cancel</button><button class="btn white" value="ok">${esc(okLabel)}</button></div></form>`);
+  const first = $('input', d);
+  if (first) first.focus();
+  return formResult(d).then(form => form && Object.fromEntries(fields.map(([n, , type]) => [n, type === 'checkbox' ? form[n].checked : form[n].value])));
+}
+
+async function accountAction(k, el) {
+  const name = el.dataset.user;
+  try {
+    if (k === 'setup-accounts') {
+      const v = await askForm('Set up accounts', 'Everyone will sign in with their own name and password, and get their own library, playlists and history. <b>This first account is the admin</b>, and gets the library used so far.', [['name', 'Your name'], ['password', 'Password', 'password'], ['again', 'Password again', 'password']], 'Set up');
+      if (!v) return settingsDialog();
+      if (v.password !== v.again) { toast('The passwords are different'); return accountAction(k, el); }
+      await api('accounts/setup', 'POST', { name: v.name, password: v.password });
+      location.reload();
+    } else if (k === 'add-user') {
+      const v = await askForm('Add an account', 'They sign in with this name and password, and can change the password later.', [['name', 'Name'], ['password', 'Password', 'password'], ['admin', 'Admin: can manage accounts and server settings', 'checkbox']], 'Add');
+      if (v) { await api('users', 'POST', v); toast(`Account ${v.name} added`); }
+      settingsDialog();
+    } else if (k === 'my-password') {
+      const v = await askForm('Change your password', 'Your other devices will be signed out.', [['current', 'Current password', 'password'], ['password', 'New password', 'password']], 'Change');
+      if (v) { await api('users/' + enc(S.session.user.name), 'PUT', v); toast('Password changed'); }
+      settingsDialog();
+    } else if (k === 'reset-password') {
+      const v = await askForm(`New password for ${name}`, `${esc(name)} will be signed out on every device.`, [['password', 'New password', 'password']], 'Set password');
+      if (v) { await api('users/' + enc(name), 'PUT', v); toast(`Password for ${name} changed`); }
+      settingsDialog();
+    } else if (k === 'toggle-admin') {
+      await api('users/' + enc(name), 'PUT', { admin: el.dataset.admin !== '1' });
+      settingsDialog();
+    } else if (k === 'delete-user') {
+      if (!await confirmInline(el, 'Tap again to delete')) return;
+      await api('users/' + enc(name), 'DELETE');
+      toast(`Account ${name} and its library deleted`);
+      settingsDialog();
+    } else if (k === 'sign-out') signOut();
+  } catch (e) { toast(e.message); settingsDialog(); }
+}
+
+/* ---------- linking a Google (YouTube Music) account ---------- */
+function googleDialog() {
+  const d = dialog(`<form method="dialog" class="ask"><h2>Link your YouTube Music account</h2>
+    <p class="muted">Gundil Music signs in to YouTube Music with your browser's cookies. Then you can import your private playlists and Liked Music, and the server uses your account when YouTube asks it to "confirm you're not a bot".</p>
+    <ol class="steps">
+      <li>On a computer, open a <b>private (incognito) window</b> and sign in at <b>music.youtube.com</b>.</li>
+      <li>Export its cookies with a "cookies.txt" browser extension (for example <i>Get cookies.txt LOCALLY</i>), in Netscape format.</li>
+      <li>Close the private window without signing out, so the cookies keep working.</li>
+      <li>Choose the file here, or paste its text.</li>
+    </ol>
+    <label class="filepick">${icon('import')}<span>Choose cookies.txt</span><input type="file" name="file" accept=".txt,text/plain"></label>
+    <textarea name="text" rows="4" placeholder="…or paste the cookies.txt text here" spellcheck="false"></textarea>
+    <p class="muted small">The cookies are stored only on this server, for your account, and give access to your Google account: link only on a server you trust. Unlink any time in Settings.</p>
+    <div class="ask-err" hidden></div>
+    <div class="dlg-actions"><button class="btn" value="cancel">Cancel</button><button class="btn white" value="ok" data-go>Link account</button></div></form>`);
+  const form = $('form', d);
+  form.file.addEventListener('change', async () => {
+    const f = form.file.files[0];
+    if (f) { form.text.value = await f.text(); $('.filepick span', d).textContent = f.name; }
+  });
+  form.addEventListener('submit', async e => {
+    if (!e.submitter || e.submitter.value !== 'ok') return;
+    e.preventDefault();
+    const b = e.submitter, err = $('.ask-err', d);
+    if (!form.text.value.trim()) { err.textContent = 'Choose the cookies.txt file first'; err.hidden = false; return; }
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner small"></span>Checking…';
+    try {
+      const r = await fetch('/api/google', { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: form.text.value });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || r.statusText);
+      S.google = data;
+      toast(`Linked ${data.account && data.account.name ? data.account.name : 'your YouTube Music account'}`);
+      settingsDialog();
+    } catch (x) {
+      err.textContent = x.message;
+      err.hidden = false;
+      b.disabled = false;
+      b.textContent = 'Link account';
+    }
+  });
+}
+
+/* ---------- importing playlists ---------- */
+async function importLink(url, name = '', btn) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner small"></span>Importing…'; }
+  else toast('Importing…');
+  try {
+    const r = await api('import', 'POST', { url, name });
+    setUser(r.state);
+    toast(`Imported ${plural(r.count, 'song')} into “${r.name}”`);
+    if ($('#dlg').open) $('#dlg').close();
+    location.hash = '#/playlist/' + enc(r.id);
+    return true;
+  } catch (e) {
+    toast(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+    return false;
+  }
+}
+
+async function importDialog(prefill = '') {
+  const d = dialog(`<form method="dialog" class="ask"><div class="dlg-head"><h2>Import playlist</h2><button class="icon-btn" value="cancel" aria-label="Close">${icon('close')}</button></div>
+    <p class="muted">Paste a link to a YouTube Music or YouTube playlist or album. Every song is copied into a playlist of your own, which you can reorder and edit.</p>
+    <label>Link<input name="url" value="${esc(prefill)}" placeholder="https://music.youtube.com/playlist?list=…" autocomplete="off" spellcheck="false"></label>
+    <label><span>Name <span class="muted small">(optional)</span></span><input name="name" placeholder="Same as on YouTube Music" autocomplete="off"></label>
+    <div class="dlg-actions"><button class="btn white" value="ok" data-go>Import</button></div>
+    <div class="import-lib"></div></form>`);
+  const form = $('form', d);
+  form.url.focus();
+  form.addEventListener('submit', e => {
+    if (!e.submitter || e.submitter.value !== 'ok') return;
+    e.preventDefault();
+    if (!form.url.value.trim()) return form.url.focus();
+    importLink(form.url.value, form.name.value, e.submitter);
+  });
+  const box = $('.import-lib', d);
+  box.innerHTML = '<div class="spinner"></div>';
+  try { if (!S.google) S.google = await api('google'); } catch { S.google = { linked: false }; }
+  if (!d.open) return;
+  if (!S.google.linked) {
+    box.innerHTML = `<div class="set-row"><div class="set-text"><b>Your private playlists</b><span>Link your YouTube Music account to import playlists only you can see, and your Liked Music</span></div><button class="btn small" type="button" data-google-link>Link account</button></div>`;
+  } else {
+    box.innerHTML = `<h3>From your YouTube Music library</h3><div class="spinner"></div>`;
+    try {
+      const list = await api('google/playlists');
+      if (!d.open) return;
+      box.innerHTML = `<h3>From your YouTube Music library</h3>` + (list.length ? list.map(p => `<div class="set-row imp-row">
+          <div class="imp-thumb">${p.thumb ? img(p.thumb, 96) : icon(p.id === 'LM' ? 'like' : 'queue')}</div>
+          <div class="set-text"><b>${esc(p.title)}</b>${p.count ? `<span>${esc(p.count)} songs</span>` : ''}</div>
+          <button class="btn small" type="button" data-import="${esc(p.id)}" data-title="${esc(p.title)}">Import</button></div>`).join('')
+        : '<p class="muted">No playlists in your YouTube Music library.</p>');
+    } catch (e) { if (d.open) box.innerHTML = `<h3>From your YouTube Music library</h3><p class="muted">${esc(e.message)}</p>`; }
+  }
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.hasAttribute('data-google-link')) googleDialog();
+    else if (b.dataset.import) importLink(b.dataset.import === 'LM' ? 'LM' : `https://music.youtube.com/playlist?list=${b.dataset.import}`, b.dataset.import === 'LM' ? 'Liked Music (YouTube)' : '', b);
+  });
+}
+
+/* =========================================================================
    settings
    ========================================================================= */
 const QUALITY = [['low', 'Low'], ['normal', 'Normal'], ['high', 'High']];
@@ -1859,12 +2084,17 @@ async function settingsDialog() {
   bindSettings(d);
   let data = {};
   const mode = fetch('/_gundil/mode').then(r => r.ok ? r.json() : null).catch(() => null);
+  const google = api('google').catch(() => null);
+  const people = S.session.accounts && S.session.admin ? api('users').catch(() => []) : Promise.resolve([]);
   try { data = await api('settings'); } catch (e) { toast(e.message); }
   S.conn = await mode;
+  S.people = await people;
   if (!d.open) return;
   S.settings = data.settings || S.settings;
   S.options = data.options || S.options;
   renderSettings(d);
+  S.google = (await google) || { linked: false };
+  if (d.open && $('.settings', d)) renderSettings(d);
 }
 
 function renderSettings(d) {
@@ -1883,20 +2113,43 @@ function renderSettings(d) {
     ${setRow(m.mode === 'client' ? `Client of ${m.server.replace(/^https?:\/\//, '')}` : 'This computer is the server',
       m.mode === 'client' ? 'Your library and YouTube Music come from that server' : `Other devices connect to ${(m.addresses || [])[0] || `port ${location.port || 80}`}`,
       `<a class="btn small" href="/_gundil/">Change</a>`)}` : '';
-  body.innerHTML = `${conn}
+  const me = S.session.user;
+  const g = S.google;
+  const acct = me ? `
+    <h3>Your account</h3>
+    ${setRow(`Signed in as ${me.name}`, me.admin ? 'Admin: manages accounts and server settings' : 'Your own library, playlists and history', `<span class="row-btns"><button class="btn small" data-set="my-password">Change password</button><button class="btn small" data-set="sign-out">Sign out</button></span>`)}` : '';
+  const people = !S.session.accounts ? (S.session.admin ? `
+    <h3>Accounts</h3>
+    ${setRow('Accounts are off', 'Everyone using this server shares one library. Set up accounts to give each person their own playlists, likes and history, with a password.', `<button class="btn small" data-set="setup-accounts">Set up accounts</button>`)}` : '')
+    : me && me.admin ? `
+    <h3>Accounts <span class="muted small">· on this server</span></h3>
+    ${(S.people || []).map(u => setRow(u.name + (u.admin ? ' · admin' : ''), u.name === me.name ? 'You' : '',
+      u.name === me.name ? '' : `<span class="row-btns"><button class="btn small" data-set="toggle-admin" data-user="${esc(u.name)}" data-admin="${u.admin ? 1 : 0}">${u.admin ? 'Remove admin' : 'Make admin'}</button><button class="btn small" data-set="reset-password" data-user="${esc(u.name)}">Password</button><button class="btn small" data-set="delete-user" data-user="${esc(u.name)}">Delete</button></span>`)).join('')}
+    <div class="set-row"><div class="set-text"><b>Add an account</b><span>For each person using this server</span></div><button class="btn small" data-set="add-user">${icon('add')}Add</button></div>` : '';
+  const google = `
+    <h3>YouTube Music account</h3>
+    ${g === null || g === undefined ? '<div class="spinner small"></div>' : !g.linked
+      ? setRow('Not linked', 'Link it to import your private playlists and Liked Music, and to get past YouTube\'s "confirm you\'re not a bot" check', `<button class="btn small" data-set="google-link">Link</button>`)
+      : setRow(g.account ? `${g.account.name}${g.account.handle ? ' · ' + g.account.handle : ''}` : 'Linked', g.error ? `Not working: ${g.error}. Link again with fresh cookies.` : 'Used to import your playlists, and when YouTube asks to sign in',
+        `<span class="row-btns"><button class="btn small" data-set="import">Import playlists</button>${g.error ? '<button class="btn small" data-set="google-link">Link again</button>' : ''}<button class="btn small" data-set="google-unlink">Unlink</button></span>`)}`;
+  const admin = S.session.admin;
+  body.innerHTML = `${acct}${conn}
     <h3>Playback on this device</h3>
     ${setRow('Audio quality', 'Lower quality uses less mobile data', `<select data-set="quality">${options(QUALITY, audioQuality())}</select>`)}
     ${setRow('Video quality', 'For the Video side of the Song / Video switch', `<select data-set="videoQuality">${options(VIDEO_QUALITY, local.get('videoQuality', 'auto'))}</select>`)}
     ${setRow('Autoplay', 'Keep playing similar songs when the queue ends', switchBtn('autoplay', S.autoplay))}
-    <h3>Server <span class="muted small">· ${esc(S.info.hostname || '')}, for everyone using it</span></h3>
+    ${google}
+    ${people}
+    <h3>Server <span class="muted small">· ${esc(S.info.hostname || '')}, for everyone using it${admin ? '' : '; only an admin can change these'}</span></h3>
     ${setRow('Region', 'Which country Home, Explore and charts are for', `<select data-set="region">${options(regions, st.region || '')}</select>`)}
     ${setRow('Language', 'Language of YouTube Music titles and sections', `<select data-set="language">${options(langs, st.language || 'en')}</select>`)}
     ${setRow('Speaker audio quality', 'When the server plays to its speaker or Bluetooth', `<select data-set="audioQuality">${options(QUALITY, st.audioQuality || 'normal')}</select>`)}
     ${setRow('Update YouTube support daily', last && last.time ? `Last updated ${new Date(last.time * 1000).toLocaleString()}` : 'Installs new yt-dlp and ytmusicapi versions when YouTube changes', switchBtn('autoUpdate', !!st.autoUpdate))}
     <div class="set-row"><div class="set-text"><b>Update YouTube support now</b></div><button class="btn small" data-set="yt-update">${icon('refresh')}Update</button></div>
     <h3>History</h3>
-    <div class="set-row"><div class="set-text"><b>Clear watch history</b><span>Songs you played, on this server</span></div><button class="btn small" data-set="clear-history">Clear</button></div>
+    <div class="set-row"><div class="set-text"><b>Clear watch history</b><span>Songs you played${me ? '' : ', on this server'}</span></div><button class="btn small" data-set="clear-history">Clear</button></div>
     <div class="set-row"><div class="set-text"><b>Clear search history</b></div><button class="btn small" data-set="clear-searches">Clear</button></div>`;
+  if (!admin) for (const el of body.querySelectorAll('[data-set=region], [data-set=language], [data-set=audioQuality], [data-set=autoUpdate], [data-set=yt-update]')) el.disabled = true;
 }
 
 async function saveServerSetting(change) {
@@ -1933,6 +2186,15 @@ function bindSettings(d) {
     const el = e.target.closest('button[data-set]');
     if (!el) return;
     const k = el.dataset.set;
+    if (['setup-accounts', 'add-user', 'my-password', 'reset-password', 'toggle-admin', 'delete-user', 'sign-out'].includes(k)) return void accountAction(k, el);
+    if (k === 'google-link') return void googleDialog();
+    if (k === 'import') return void importDialog();
+    if (k === 'google-unlink') {
+      if (!await confirmInline(el, 'Tap again to unlink')) return;
+      S.google = await api('google', 'DELETE');
+      toast('YouTube Music account unlinked');
+      return void renderSettings(d);
+    }
     if (k === 'autoplay') { setAutoplay(!S.autoplay); renderSettings(d); }
     else if (k === 'autoUpdate') await saveServerSetting({ autoUpdate: !(S.settings || {}).autoUpdate });
     else if (k === 'yt-update') await runYtUpdate(el, () => { if (d.open) renderSettings(d); });
@@ -1945,11 +2207,12 @@ function bindSettings(d) {
 }
 
 /* Second tap confirms, so a dialog doesn't have to open over this one. */
-function confirmInline(btn) {
+function confirmInline(btn, ask = 'Tap again to clear') {
   if (btn.dataset.sure) return Promise.resolve(true);
+  const was = btn.textContent;
   btn.dataset.sure = '1';
-  btn.textContent = 'Tap again to clear';
-  setTimeout(() => { if (btn.isConnected) { delete btn.dataset.sure; btn.textContent = 'Clear'; } }, 4000);
+  btn.textContent = ask;
+  setTimeout(() => { if (btn.isConnected) { delete btn.dataset.sure; btn.textContent = was; } }, 4000);
   return Promise.resolve(false);
 }
 
@@ -2109,13 +2372,18 @@ document.addEventListener('click', async e => {
       case 'guide':
         if (innerWidth >= 1150) { $('#app').classList.toggle('mini'); } else { $('#app').classList.toggle('guide-forced'); }
         return;
+      case 'import-playlist': return void importDialog();
       case 'avatar-menu':
         return void showMenu([
+          S.session.user ? { icon: 'account', label: S.session.user.name + (S.session.user.admin ? ' (admin)' : ''), run: settingsDialog } : null,
+          S.session.user ? '-' : null,
           { icon: 'library', label: 'Library', run: () => { location.hash = '#/library'; } },
           { icon: 'history', label: 'History', run: () => { location.hash = '#/library/history'; } },
           { icon: 'cast', label: 'Speakers & Bluetooth', run: openCast },
+          { icon: 'import', label: 'Import playlist', run: () => importDialog() },
           { icon: 'settings', label: 'Settings', run: settingsDialog },
           { icon: 'info', label: 'About', run: aboutDialog },
+          S.session.user ? { icon: 'logout', label: 'Sign out', run: signOut } : null,
           android ? { icon: 'speaker', label: 'Change server', run: () => android.changeServer() } : null,
         ], actEl);
       case 'search-open':
@@ -2302,6 +2570,7 @@ function connectEvents() {
   es.addEventListener('state', async () => { try { setUser(await api('state')); } catch { /* ignore */ } });
   es.addEventListener('info', async () => { try { S.info = await api('info'); } catch { /* ignore */ } });
   es.addEventListener('settings', e => settingsChanged(JSON.parse(e.data)));
+  es.addEventListener('accounts', accountsChanged);
   es.addEventListener('bluetooth', () => { if ($('#cast-dlg').open) refreshCast(); });
 }
 
@@ -2328,6 +2597,11 @@ function staticIcons() {
 
 async function init() {
   staticIcons();
+  try {
+    S.session = await api('session');
+  } catch { /* an older server: no accounts */ }
+  if (S.session.accounts && !S.session.user) return showSignIn();
+  renderAvatar();
   try {
     const [info, user, server] = await Promise.all([api('info'), api('state'), api('player')]);
     S.info = info;

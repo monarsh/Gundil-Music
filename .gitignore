@@ -6,3 +6,5 @@
 /android/app/build/
 /android/.gradle/
 /android/build/
+__pycache__/
+*.pyc

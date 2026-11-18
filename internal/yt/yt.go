@@ -372,6 +372,23 @@ func (c *Client) StreamFormat(ctx context.Context, videoID string, f Format, ref
 		return s, nil
 	}
 	data, err := c.Cached(ctx, "stream", args, 0)
+	if err != nil && IsSignInCheck(err) {
+		// YouTube wants a signed-in viewer: try the linked Google accounts.
+		for _, file := range cookiesFrom(ctx) {
+			a := map[string]string{"cookies": file}
+			for k, v := range args {
+				a[k] = v
+			}
+			d, e := c.Call(ctx, "stream", a)
+			if e == nil {
+				data, err = d, nil
+				break
+			}
+			if !IsSignInCheck(e) {
+				err = e
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -394,6 +411,32 @@ func (c *Client) StreamFormat(ctx context.Context, videoID string, f Format, ref
 	c.streams[key] = s
 	c.cmu.Unlock()
 	return s, nil
+}
+
+type cookiesKey struct{}
+
+// WithCookies lists Google sign-in cookie files a stream may fall back to
+// when YouTube asks to confirm the viewer isn't a bot.
+func WithCookies(ctx context.Context, files []string) context.Context {
+	if len(files) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, cookiesKey{}, files)
+}
+
+func cookiesFrom(ctx context.Context) []string {
+	f, _ := ctx.Value(cookiesKey{}).([]string)
+	return f
+}
+
+// IsSignInCheck says whether YouTube refused with "Sign in to confirm
+// you're not a bot".
+func IsSignInCheck(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "confirm you") && strings.Contains(m, "bot") || strings.Contains(m, "sign in to confirm")
 }
 
 // Status checks the helper and its Python packages.

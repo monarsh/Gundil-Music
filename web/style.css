@@ -556,3 +556,32 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 @media (prefers-reduced-motion: reduce) {
   *, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---------- accounts, YouTube Music account, import ---------- */
+.ask { gap: 16px !important; }
+.ask > p { margin: 0; line-height: 1.45; }
+.ask label:not(.check):not(.filepick), #signin label { display: grid; gap: 6px; color: var(--text2); font-size: 12px; }
+.ask label input, .ask textarea, #signin input { width: 100%; border: 0; border-bottom: 1px solid rgba(255, 255, 255, .3); background: transparent; color: var(--text); font: inherit; font-size: 16px; padding: 8px 0; outline: 0; }
+.ask textarea { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; padding: 8px; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
+.ask label input:focus, #signin input:focus { border-bottom-color: #fff; }
+.ask label.check { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.ask label.check input { width: 18px; height: 18px; accent-color: #3ea6ff; }
+.ask-err, .signin-err { background: #3b1414; border: 1px solid #6b2020; border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; line-height: 1.4; }
+.filepick { display: flex; align-items: center; justify-content: center; gap: 8px; height: 40px; border-radius: 20px; border: 1px dashed rgba(255, 255, 255, .4); cursor: pointer; font-weight: 500; }
+.filepick svg { width: 20px; height: 20px; }
+.filepick input { display: none; }
+.row-btns { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; max-width: 60%; }
+.import-lib h3 { margin: 8px 0 4px; }
+.imp-row { gap: 12px; }
+.imp-thumb { width: 48px; height: 48px; border-radius: 4px; overflow: hidden; flex: none; background: var(--raised); display: grid; place-items: center; }
+.imp-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.imp-thumb svg { width: 24px; height: 24px; }
+#signin { position: fixed; inset: 0; z-index: 1000; background: #030303; display: flex; justify-content: center; overflow-y: auto; }
+.signin-box { width: 100%; max-width: 400px; padding: 64px 24px 32px; display: grid; gap: 20px; align-content: start; }
+.signin-box h1 { font-size: 28px; margin: 12px 0 0; }
+.signin-box p { margin: 0; line-height: 1.45; }
+.signin-box .btn { height: 44px; border-radius: 22px; font-size: 15px; }
+.logo-row { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
+.logo-row svg, .logo-row img { width: 32px; height: 32px; }
+@media (max-width: 600px) { .row-btns { max-width: 100%; } .set-row:has(.row-btns) { flex-wrap: wrap; } }

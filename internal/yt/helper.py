@@ -54,6 +54,48 @@ def yt():
     return _local.yt
 
 
+_auth_lock = threading.Lock()
+_auth = {}
+
+
+def yt_auth(path):
+    """YouTube Music signed in with a cookies.txt export of the account."""
+    import http.cookiejar
+    key = (path, os.path.getmtime(path), threading.get_ident())
+    with _auth_lock:
+        if key in _auth:
+            return _auth[key]
+    jar = http.cookiejar.MozillaCookieJar(path)
+    jar.load(ignore_discard=True, ignore_expires=True)
+    cookies = {}
+    for c in jar:
+        if c.domain.lstrip(".").endswith("youtube.com"):
+            cookies[c.name] = c.value
+    if "__Secure-3PAPISID" not in cookies:
+        raise RuntimeError("these cookies are not signed in to YouTube")
+    headers = {
+        "cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
+        "authorization": "SAPISIDHASH 0_0",  # recomputed by ytmusicapi for each request
+        "x-goog-authuser": "0",
+        "origin": "https://music.youtube.com",
+        "x-origin": "https://music.youtube.com",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "accept": "*/*",
+        "content-type": "application/json",
+    }
+    kwargs = {"language": LANG}
+    if REGION:
+        kwargs["location"] = REGION
+    api = YTMusic(auth=headers, **kwargs)
+    with _auth_lock:
+        _auth[key] = api
+    return api
+
+
+def yt_for(args):
+    return yt_auth(args["cookies"]) if args.get("cookies") else yt()
+
+
 # ---------- normalising ----------
 
 def thumb(x):
@@ -353,7 +395,8 @@ def m_artist(args):
 
 
 def m_playlist(args):
-    p = yt().get_playlist(strip_vl(args["id"]), limit=int(args.get("limit") or 200))
+    limit = int(args.get("limit") or 200)
+    p = yt_for(args).get_playlist(strip_vl(args["id"]), limit=limit if limit > 0 else None)
     tracks = [t for t in (track(x) for x in p.get("tracks") or []) if t]
     author = p.get("author")
     if isinstance(author, dict):
@@ -366,6 +409,23 @@ def m_playlist(args):
         "trackCount": p.get("trackCount") or len(tracks), "duration": p.get("duration") or "",
         "views": p.get("views") or "", "tracks": tracks,
     }
+
+
+def m_account(args):
+    """Who the linked Google account is."""
+    a = yt_auth(args["cookies"]).get_account_info()
+    return {"name": a.get("accountName") or "", "handle": a.get("channelHandle") or "", "photo": a.get("accountPhotoUrl") or ""}
+
+
+def m_library_playlists(args):
+    """The linked account's playlists in YouTube Music."""
+    out = [{"id": "LM", "title": "Liked Music", "count": "", "thumb": ""}]
+    for p in yt_auth(args["cookies"]).get_library_playlists(limit=None) or []:
+        pid = strip_vl(p.get("playlistId") or "")
+        if not pid or pid == "LM" or pid.startswith("SE"):
+            continue
+        out.append({"id": pid, "title": p.get("title") or "", "count": str(p.get("count") or ""), "thumb": thumb(p)})
+    return out
 
 
 def m_watch(args):
@@ -431,16 +491,31 @@ def video_format(height):
             f"bestvideo[height<={h}][vcodec^=vp9]/bestvideo[height<={h}]/best[height<={h}]")
 
 
-def ydl_for(fmt):
+# Other YouTube players to ask when the usual ones get "confirm you're not a bot".
+OTHER_CLIENTS = ["tv_simply", "mweb", "web_embedded"]
+
+
+def ydl_for(fmt, cookies="", clients=None):
+    cookies = cookies or COOKIES
+    key = (fmt, cookies, tuple(clients or ()))
     with _ydl_lock:
-        if fmt not in _ydl:
-            _ydl[fmt] = yt_dlp.YoutubeDL({
+        if key not in _ydl:
+            opts = {
                 "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
                 "format": fmt,
                 "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
-                **({"cookiefile": COOKIES} if COOKIES else {}),
-            })
-        return _ydl[fmt]
+            }
+            if cookies:
+                opts["cookiefile"] = cookies
+            if clients:
+                opts["extractor_args"] = {"youtube": {"player_client": list(clients)}}
+            _ydl[key] = yt_dlp.YoutubeDL(opts)
+        return _ydl[key]
+
+
+def sign_in_check(e):
+    m = str(e).lower()
+    return "confirm you" in m and "bot" in m
 
 
 def m_stream(args):
@@ -450,7 +525,15 @@ def m_stream(args):
         fmt = video_format(args.get("height") or "720")
     else:
         fmt = AUDIO_FORMATS.get(args.get("quality") or "normal", AUDIO_FORMATS["normal"])
-    info = ydl_for(fmt).extract_info("https://www.youtube.com/watch?v=" + vid, download=False)
+    url = "https://www.youtube.com/watch?v=" + vid
+    cookies = args.get("cookies") or ""
+    try:
+        info = ydl_for(fmt, cookies).extract_info(url, download=False)
+    except Exception as e:  # noqa: BLE001
+        if not sign_in_check(e):
+            raise
+        # Some YouTube players are asked less often; try them before giving up.
+        info = ydl_for(fmt, cookies, OTHER_CLIENTS).extract_info(url, download=False)
     url = info.get("url")
     if not url and info.get("requested_formats"):
         url = info["requested_formats"][0].get("url")
@@ -501,10 +584,10 @@ def handle(req):
         msg = str(e) or e.__class__.__name__
         if "yt_dlp" in sys.modules and isinstance(e, getattr(yt_dlp.utils, "DownloadError", ())):
             msg = msg.replace("ERROR: ", "")
-            if "confirm you" in msg and "not a bot" in msg:
-                msg = ("YouTube wants this server to sign in before it plays songs (this happens on some networks). "
-                       "Export your YouTube cookies to a cookies.txt file and start Gundil Music with -cookies <file>. "
-                       "See the README.")
+            if "confirm you" in msg and "bot" in msg:
+                # Keep "sign in to confirm": the server looks for it to retry with a linked account.
+                msg = ("YouTube asked this server to sign in to confirm you're not a bot (this happens on some networks). "
+                       "Link your Google account in Settings and Gundil Music will use it whenever this happens.")
         traceback.print_exc(file=sys.stderr)
         send({"id": rid, "error": msg[:500]})
 

@@ -17,6 +17,8 @@ What you get, laid out like YouTube Music:
 - **Drag to reorder** Up next and your playlists, and a **sleep timer**
 - **Settings**: audio and video quality, region and language, daily YouTube updates, clearing history
 - **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
+- **Import playlists** from YouTube Music or YouTube by link, or your private ones and Liked Music from your linked account
+- **Accounts**: optional sign-in, so each person gets their own library, playlists and history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
 - **Background play**: keeps playing when the app is minimised or the screen is off, for free
 - **Server or client**: every Windows, Linux desktop, AppImage and Pi build can be the server or connect to another Gundil Music server
@@ -134,6 +136,7 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-open` | | on for Windows | Open the app in the browser after starting |
 | `-auto-update` | `GUNDIL_AUTO_UPDATE` | `true` | Update yt-dlp and ytmusicapi daily when newer versions exist |
 | `-update-youtube` | | | Update yt-dlp and ytmusicapi now, then exit |
+| `-reset-password` | | | Set an account's password, as `name:newpassword`, then exit |
 | `-cookies` | `GUNDIL_COOKIES` | `<data>/cookies.txt` if present | YouTube cookies, for when YouTube asks the server to sign in |
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
 | | `GUNDIL_LANG` | `en` | Language for YouTube Music results |
@@ -159,15 +162,81 @@ AppImage, the Windows zip, a Pi and Termux alike. To update right away:
 Then restart the server, unless you used the button, which takes effect
 immediately. Turn the daily check off in Settings or with `-auto-update=false`.
 
-If songs fail with "YouTube wants this server to sign in", YouTube is
-challenging your server's network (common on cloud servers and VPNs, rare at
-home). Export cookies from a browser where you're signed in to YouTube, as
-described in yt-dlp's
-[cookie guide](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
-Save them as `cookies.txt` in the data folder, or pass `-cookies <file>`.
+### "Sign in to confirm you're not a bot"
 
-Without `-auth`, anyone on your network can use the player and manage
-Bluetooth. Don't expose the port to the internet.
+Sometimes YouTube challenges a server's network before it plays songs. This is
+common on cloud servers and VPNs and rare at home. Gundil Music handles it as far
+as it can, by itself:
+
+1. It first asks YouTube again, as other YouTube players that are challenged less often.
+2. If that fails too, it plays the song signed in with a **linked YouTube Music account**
+   (see below): the account of whoever is playing, then an admin's.
+
+So the one-time fix is to link an account in **Settings → YouTube Music account**.
+No app can switch this check off for good; it's YouTube's decision. A
+server-wide `cookies.txt` in the data folder (or `-cookies <file>`) still works
+too, and is used for every song.
+
+## Accounts
+
+Out of the box everyone using a server shares one library and nobody signs in.
+To give each person their own playlists, likes, saved albums, history and searches:
+
+1. Open **Settings → Accounts → Set up accounts** and choose your name and password.
+   This first account is an **admin**, and keeps the library used so far.
+2. Add an account for each person under **Settings → Accounts → Add**.
+3. Everyone else signs in on their phone or computer. The Android app and
+   browsers stay signed in for a year.
+
+Admins add and delete accounts, reset passwords, make other admins, and change
+the server's settings (region, language, speaker quality, YouTube updates).
+Everyone can change their own password. Playing on the server's speaker or
+Bluetooth is shared: songs played there go into the history of whoever started
+them.
+
+Forgot the admin password? On the server run
+`gundil-music -reset-password "name:new password"`.
+
+Accounts are stored in `<data>/users.json` (passwords are hashed), and each
+person's files in `<data>/users/`.
+
+Google sign-in ("Sign in with Google") can't be used for Gundil Music accounts.
+Google only allows it for apps on a public `https://` web address registered
+with Google, and a home server at `http://192.168.x.x:8338` can't be. Gundil
+Music accounts use a name and password instead.
+
+## Importing playlists
+
+- **By link**: paste a YouTube Music or YouTube playlist or album link into
+  Search, or use **Library → Import playlist**. Every song (no 200-song limit) is
+  copied into a playlist of your own that you can reorder and edit. Unlisted
+  playlists work too.
+- **From a YouTube or YouTube Music page in the app**: ⋮ → **Import as my playlist**.
+- **Your private playlists and Liked Music**: link your YouTube Music account
+  first. **Import playlist** then lists your YouTube Music library, one tap each.
+
+## Linking your YouTube Music account
+
+Gundil Music signs in to YouTube Music with your browser's cookies (it can't
+use Google's sign-in page, as above). In **Settings → YouTube Music account → Link**:
+
+1. On a computer, open a **private (incognito) window** and sign in at music.youtube.com.
+2. Export its cookies in Netscape format with a "cookies.txt" browser extension,
+   such as *Get cookies.txt LOCALLY*.
+3. Close the private window **without signing out**, so YouTube doesn't replace
+   those cookies.
+4. Choose the file in the Link dialog, or paste its text.
+
+Each account links its own YouTube Music account. The cookies are kept on the
+server (`google-cookies.txt` in that person's folder, readable only by the
+server's user) and give access to that Google account, so link only on a server
+you trust. **Unlink** removes them. If YouTube signs the cookies out later,
+Settings says so: link again with a fresh export.
+
+## Security
+
+Without `-auth` or accounts, anyone on your network can use the player and
+manage Bluetooth. Don't expose the port to the internet: it is plain HTTP.
 
 ## Where the sound comes out
 

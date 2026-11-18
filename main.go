@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/monarsh/gundil-music/internal/server"
 	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
+	"github.com/monarsh/gundil-music/internal/users"
 	"github.com/monarsh/gundil-music/internal/yt"
 )
 
@@ -63,6 +65,7 @@ func main() {
 	updateNow := flag.Bool("update-youtube", false, "update yt-dlp and ytmusicapi now, then exit")
 	autoUpdate := flag.Bool("auto-update", env("GUNDIL_AUTO_UPDATE", "true") != "false", "update yt-dlp and ytmusicapi daily when newer versions exist")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	resetPassword := flag.String("reset-password", "", "set a Gundil Music account's password, as name:newpassword, then exit")
 	modeFlag := flag.String("mode", env("GUNDIL_MODE", ""), "server, or client of the server given with -connect (remembered; also changeable in the app)")
 	connect := flag.String("connect", env("GUNDIL_CONNECT", ""), "be a client of the Gundil Music server at this address, like 192.168.1.20 (remembered)")
 	flag.Parse()
@@ -84,6 +87,16 @@ func main() {
 		abs, _ := filepath.Abs(*cookies)
 		os.Setenv("GUNDIL_COOKIES", abs) // read by the helper
 		log.Printf("using YouTube cookies from %s", abs)
+	}
+	accts := users.Load(filepath.Join(*dataDir, "users.json"))
+	if *resetPassword != "" {
+		name, pw, _ := strings.Cut(*resetPassword, ":")
+		if err := accts.SetPassword(name, pw, ""); err != nil {
+			fmt.Fprintln(os.Stderr, "cannot set the password:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Password for %s changed; it is signed out on every device.\n", name)
+		return
 	}
 	// Settings chosen in the app; the command-line options are the defaults.
 	cfg := settings.Load(filepath.Join(*dataDir, "settings.json"), settings.Settings{
@@ -133,7 +146,8 @@ func main() {
 	tcp := ln.Addr().(*net.TCPAddr)
 
 	web, _ := fs.Sub(webFiles, "web")
-	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port, Settings: cfg}
+	srv := &server.Server{YT: ytc, Store: st, Player: pl, BT: bt, Web: web, Version: version, Auth: *auth, Port: tcp.Port, Settings: cfg,
+		Users: accts, DataDir: *dataDir}
 	srv.OnSettings = func(old, now settings.Settings) {
 		ytc.SetAudioQuality(now.AudioQuality)
 		if old.Region != now.Region || old.Language != now.Language {
@@ -144,7 +158,7 @@ func main() {
 
 	pl.Resolve = srv.StreamURL
 	pl.OnChange = srv.BroadcastPlayer
-	pl.OnPlay = st.AddHistory
+	pl.OnPlay = func(t model.Track) { srv.PlayerLibrary().AddHistory(t) }
 	pl.Prefetch = func(id string) { ytc.Stream(context.Background(), id, false) }
 	pl.More = func(last model.Track) []model.Track {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -160,7 +174,7 @@ func main() {
 		json.Unmarshal(data, &w)
 		out := w.Tracks[:0]
 		for _, t := range w.Tracks {
-			if !st.Disliked(t.VideoID) {
+			if !srv.PlayerLibrary().Disliked(t.VideoID) {
 				out = append(out, t)
 			}
 		}

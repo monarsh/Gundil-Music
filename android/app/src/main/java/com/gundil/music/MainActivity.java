@@ -20,6 +20,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.ViewGroup;
+import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -168,6 +169,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         if (web != null) js("window.gundilVisible && window.gundilVisible(false)");
+        CookieManager.getInstance().flush(); // stay signed in to the server
         super.onStop();
     }
 
