@@ -59,6 +59,34 @@
         <div class="pp-img" id="pp-img"></div>
         <video id="pp-video" muted playsinline disablepictureinpicture preload="auto" data-act="video-tap"></video>
         <button class="icon-btn pp-fs" data-act="fullscreen" id="pp-fs" aria-label="Full screen" title="Full screen"></button>
+        <div class="fs-ui" id="fs-ui" data-act="video-tap">
+          <div class="fs-top">
+            <button class="icon-btn" data-act="fullscreen" id="fs-down" aria-label="Exit full screen"></button>
+            <div class="fs-titles"><div class="fs-title" id="fs-title"></div><div class="fs-sub" id="fs-sub"></div></div>
+            <div class="fs-mode" role="group" aria-label="Song or video">
+              <button data-act="mode" data-mode="song" id="fs-song" aria-label="Song"></button><button data-act="mode" data-mode="video" id="fs-video" aria-label="Video"></button>
+            </div>
+            <div class="fs-right">
+              <button class="icon-btn" data-act="share-current" id="fs-share" aria-label="Share"></button>
+              <button class="icon-btn cast-btn" data-act="cast" id="fs-cast" aria-label="Speakers and Bluetooth"></button>
+              <button class="icon-btn" data-act="current-menu" id="fs-more" aria-label="More actions"></button>
+            </div>
+          </div>
+          <div class="fs-mid">
+            <button class="icon-btn" data-act="shuffle" id="fs-shuffle" aria-label="Shuffle"></button>
+            <button class="icon-btn" data-act="prev" id="fs-prev" aria-label="Previous"></button>
+            <button class="icon-btn fs-play" data-act="toggle" id="fs-play" aria-label="Play"></button>
+            <button class="icon-btn" data-act="next" id="fs-next" aria-label="Next"></button>
+            <button class="icon-btn" data-act="repeat" id="fs-repeat" aria-label="Repeat"></button>
+          </div>
+          <div class="fs-bottom">
+            <span id="fs-pos">0:00</span>
+            <input id="fs-seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+            <span id="fs-dur">0:00</span>
+            <button class="icon-btn" data-act="fullscreen" id="fs-exit" aria-label="Exit full screen"></button>
+          </div>
+        </div>
+        <div class="fs-skip" id="fs-skip"></div>
       </div>
       <div class="pp-info">
         <div class="pp-titles">

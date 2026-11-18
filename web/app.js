@@ -73,6 +73,8 @@ const ICONS = {
   fullscreen: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
   lyricsFs: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
   fullscreenExit: 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z',
+  headphones: 'M12 3a9 9 0 00-9 9v7c0 1.1.9 2 2 2h3v-8H5v-1a7 7 0 0114 0v1h-3v8h3c1.1 0 2-.9 2-2v-7a9 9 0 00-9-9z',
+  videoMode: 'M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9.5 16.5v-9l7 4.5z',
   refresh: 'M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z',
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
@@ -681,7 +683,7 @@ function renderProgress() {
   const dur = S.duration || (current() || {}).duration || 0;
   const pct = dur ? Math.min(100, S.position / dur * 100) : 0;
   const v = Math.round(pct * 10);
-  for (const el of [$('#seek'), $('#pp-seek')]) {
+  for (const el of [$('#seek'), $('#pp-seek'), $('#fs-seek')]) {
     if (!seeking) el.value = v;
     el.style.setProperty('--fill', pct + '%');
   }
@@ -689,6 +691,8 @@ function renderProgress() {
   $('#b-time').textContent = dur ? `${fmt(S.position) || '0:00'} / ${fmt(dur)}` : '';
   $('#pp-pos').textContent = fmt(S.position) || '0:00';
   $('#pp-dur').textContent = fmt(dur) || '0:00';
+  $('#fs-pos').textContent = fmt(S.position) || '0:00';
+  $('#fs-dur').textContent = fmt(dur) || '0:00';
   if (S.ppOpen && S.ppTab === 'lyrics') syncLyrics();
 }
 
@@ -721,8 +725,11 @@ function renderPlayer() {
       $('#b-sub').innerHTML = trackSub(t, { views: false }) + (t.year ? ' • ' + esc(t.year) : '');
       $('#pp-img').innerHTML = img(t.thumb, 720);
       $('#pp-art').classList.toggle('video', t.type === 'video' && !/googleusercontent/.test(t.thumb));
-      $('#pp-title').textContent = t.title;
+      $('#pp-title').innerHTML = `<span>${esc(t.title)}</span>`;
+      marquee($('#pp-title'));
       $('#pp-sub').innerHTML = artistLinks(t.artists);
+      $('#fs-title').textContent = t.title;
+      $('#fs-sub').textContent = (t.artists || []).map(a => a.name).join(', ');
       document.title = `${t.title} - Gundil Music`;
     } else {
       document.title = 'Gundil Music';
@@ -739,14 +746,18 @@ function renderPlayer() {
     thumb.innerHTML = t ? img(t.thumb, 60) + (S.loading ? '<div class="spinner"></div>' : '') : '';
   }
   const playing = t && S.playing && !S.paused;
-  for (const el of [$('#b-play'), $('#pp-play')]) {
+  for (const el of [$('#b-play'), $('#pp-play'), $('#fs-play')]) {
     el.innerHTML = icon(playing ? 'pause' : 'play');
     el.setAttribute('aria-label', playing ? 'Pause' : 'Play');
   }
+  if ($('#pp-art').classList.contains('fs')) {
+    if (!playing) fsShow(); // paused: keep the controls up
+    else if ($('#pp-art').classList.contains('ui') && !fsHideTimer) fsShow(); // playing again: fade them later
+  }
   document.body.classList.toggle('paused', !playing);
   if ('mediaSession' in navigator && !isServer()) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
-  for (const el of [$('#b-shuffle'), $('#pp-shuffle')]) { el.classList.toggle('on', S.shuffle); el.classList.toggle('dim', !S.shuffle); }
-  for (const el of [$('#b-repeat'), $('#pp-repeat')]) {
+  for (const el of [$('#b-shuffle'), $('#pp-shuffle'), $('#fs-shuffle')]) { el.classList.toggle('on', S.shuffle); el.classList.toggle('dim', !S.shuffle); }
+  for (const el of [$('#b-repeat'), $('#pp-repeat'), $('#fs-repeat')]) {
     el.classList.toggle('on', S.repeat !== 'off');
     el.classList.toggle('dim', S.repeat === 'off');
     el.innerHTML = icon(S.repeat === 'one' ? 'repeatOne' : 'repeat');
@@ -754,7 +765,7 @@ function renderPlayer() {
   }
   $('#b-expand').innerHTML = icon(S.ppOpen ? 'down' : 'up');
   $('#pp-where').textContent = S.source ? `Playing from ${S.source}` : '';
-  for (const b of $$('#pp-mode button')) b.classList.toggle('on', b.dataset.mode === (isServer() ? 'song' : S.mode));
+  for (const b of $$('#pp-mode button, .fs-mode button')) b.classList.toggle('on', b.dataset.mode === (isServer() ? 'song' : S.mode));
   $('#pp-mode').classList.toggle('off', isServer());
   renderRating();
   renderVolume();
@@ -906,6 +917,8 @@ function setFullscreen(on, auto = false) {
   if (on === art.classList.contains('fs')) return;
   art.classList.toggle('fs', on);
   fsByRotation = on && auto;
+  if (on) fsShow();
+  else fsHide();
   $('#pp-fs').innerHTML = icon(on ? 'fullscreenExit' : 'fullscreen');
   $('#pp-fs').setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
   if (inAndroidApp()) {
@@ -921,6 +934,77 @@ function setFullscreen(on, auto = false) {
   } catch { /* not supported: the page-filling view is enough */ }
 }
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && !inAndroidApp()) setFullscreen(false); });
+
+/* A title too long for its line scrolls sideways and back, as in YouTube Music. */
+function marquee(el) {
+  el.classList.remove('mq');
+  requestAnimationFrame(() => {
+    const span = el.firstElementChild;
+    if (!span || !el.clientWidth) return; // hidden: done again when shown
+    const d = span.scrollWidth - el.clientWidth;
+    if (d <= 2) return;
+    el.style.setProperty('--mq', -(d + 16) + 'px');
+    el.style.setProperty('--mq-t', (4 + d / 40).toFixed(1) + 's');
+    el.classList.add('mq');
+  });
+}
+addEventListener('resize', () => marquee($('#pp-title')));
+
+/* Full-screen controls, as in YouTube Music: a tap shows them (they fade
+   after a few seconds while playing), a double tap on the left or right
+   skips 10 seconds back or ahead, and a swipe down leaves full screen. */
+let fsHideTimer = null, fsTapTimer = null, fsLastTap = { at: 0, x: 0 }, fsSkipTimer = null;
+function fsHide() {
+  clearTimeout(fsHideTimer);
+  fsHideTimer = null;
+  $('#pp-art').classList.toggle('ui', false);
+}
+function fsShow() {
+  $('#pp-art').classList.add('ui');
+  clearTimeout(fsHideTimer);
+  fsHideTimer = null;
+  if (S.playing && !S.paused) fsHideTimer = setTimeout(() => (seeking ? fsShow() : fsHide()), 3000);
+}
+function fsTap(e) {
+  const art = $('#pp-art');
+  if (!art.classList.contains('fs')) return;
+  const w = art.clientWidth, x = e.clientX, now = Date.now();
+  const side = x < w / 3 ? -1 : x > w * 2 / 3 ? 1 : 0;
+  if (side && now - fsLastTap.at < 300 && Math.abs(x - fsLastTap.x) < 80) {
+    clearTimeout(fsTapTimer);
+    fsLastTap = { at: now, x }; // more taps keep skipping
+    const dur = S.duration || (current() || {}).duration || 0;
+    seek(Math.max(0, Math.min(dur ? dur - 1 : Infinity, S.position + side * 10)));
+    const k = $('#fs-skip');
+    k.textContent = side < 0 ? '« 10 seconds' : '10 seconds »';
+    k.className = 'fs-skip on ' + (side < 0 ? 'left' : 'right');
+    clearTimeout(fsSkipTimer);
+    fsSkipTimer = setTimeout(() => { k.className = 'fs-skip'; }, 600);
+    return;
+  }
+  fsLastTap = { at: now, x };
+  clearTimeout(fsTapTimer);
+  // On the sides, wait a moment in case this is the first tap of a double tap.
+  fsTapTimer = setTimeout(() => (art.classList.contains('ui') ? fsHide() : fsShow()), side ? 260 : 0);
+}
+{
+  const ui = $('#fs-ui');
+  // Using a control keeps the controls up.
+  ui.addEventListener('click', e => { if (e.target.closest('button, input')) fsShow(); });
+  ui.addEventListener('mousemove', () => { if (matchMedia('(hover: hover)').matches) fsShow(); });
+  let y0 = null, x0 = 0;
+  ui.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    y0 = e.touches.length === 1 && !e.target.closest('input') ? t.clientY : null;
+    x0 = t.clientX;
+  }, { passive: true });
+  ui.addEventListener('touchend', e => {
+    if (y0 === null) return;
+    const t = e.changedTouches[0], dy = t.clientY - y0, dx = t.clientX - x0;
+    y0 = null;
+    if (dy > 90 && Math.abs(dx) < dy / 2) { swipedAt = Date.now(); setFullscreen(false); }
+  });
+}
 
 /* The Android app reports turning the phone: sideways shows a playing video full screen. */
 window.gundilOrientation = landscape => {
@@ -1098,6 +1182,7 @@ function openPlayer(tab) {
   shownQueue = -1;
   renderPPTab();
   renderPlayer();
+  marquee($('#pp-title'));
 }
 function closePlayer() {
   if (!S.ppOpen) return;
@@ -2886,7 +2971,7 @@ document.addEventListener('click', async e => {
       case 'mode': return void setMode(actEl.dataset.mode);
       case 'sleep': return void sleepMenu(actEl);
       case 'fullscreen': return void setFullscreen(!$('#pp-art').classList.contains('fs'));
-      case 'video-tap': return void ($('#pp-art').classList.contains('fs') ? toggle() : null);
+      case 'video-tap': return void fsTap(e);
       case 'save-queue': return void newPlaylistDialog(S.queue);
       case 'q-remove': return void removeFromQueue(+row.dataset.q);
       case 'lyric-seek': lyricHold = 0; return void seek(+actEl.dataset.start);
@@ -3059,9 +3144,10 @@ document.addEventListener('contextmenu', e => {
   trackMenu(t, { getBoundingClientRect: () => ({ right: e.clientX + 240, bottom: e.clientY, top: e.clientY }) }, { own: l.own, idx: +row.dataset.idx });
 });
 
-for (const el of [$('#seek'), $('#pp-seek')]) {
+for (const el of [$('#seek'), $('#pp-seek'), $('#fs-seek')]) {
   el.addEventListener('input', () => {
     seeking = true;
+    if (el.id === 'fs-seek') fsShow();
     el.style.setProperty('--fill', el.value / 10 + '%');
   });
   el.addEventListener('change', () => {
@@ -3140,6 +3226,15 @@ function staticIcons() {
   set('#b-more', 'more');
   set('#pp-close', 'down');
   set('#pp-fs', 'fullscreen');
+  set('#fs-down', 'down');
+  set('#fs-exit', 'fullscreenExit');
+  set('#fs-prev', 'prev');
+  set('#fs-next', 'next');
+  set('#fs-shuffle', 'shuffle');
+  set('#fs-share', 'share');
+  set('#fs-more', 'more');
+  set('#fs-song', 'headphones');
+  set('#fs-video', 'videoMode');
   set('.ico-playlist-add', 'playlistAdd');
   set('.ico-share', 'share');
 }
