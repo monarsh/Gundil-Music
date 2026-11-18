@@ -110,3 +110,73 @@ for line in sys.stdin:
 		t.Errorf("past the end: status %d", w.Code)
 	}
 }
+
+// YouTube refuses the links of the usual players (as it does when they need
+// proof only its own apps give): the server asks as other players, plays
+// with the first that works, and goes straight to it for the next stream.
+func TestStreamTriesOtherPlayers(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not found")
+	}
+	data := []byte("some video bytes, enough to tell them apart")
+	var asked []string
+	gv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := r.URL.Query().Get("c")
+		asked = append(asked, c)
+		if c != "tv" {
+			http.Error(w, "no", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(data)-1, len(data)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(data)
+	}))
+	defer gv.Close()
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "helper.py")
+	os.WriteFile(helper, []byte(`
+import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    c = req["args"].get("clients", "")
+    out = {"id": req["id"], "result": {"url": "`+gv.URL+`/videoplayback?c=" + c, "mime": "video/mp4", "expires": 0}}
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+`), 0o644)
+	ytc, err := yt.New(py, helper, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ytc.Close()
+	s := &Server{YT: ytc}
+	play := func(id string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/stream/"+id+"?kind=video&h=720", nil)
+		r.SetPathValue("id", id)
+		r.Header.Set("Range", "bytes=0-")
+		w := httptest.NewRecorder()
+		s.stream(w, r)
+		return w
+	}
+	if w := play("aaaaaaaaaaa"); w.Code != http.StatusPartialContent || !bytes.Equal(w.Body.Bytes(), data) {
+		t.Fatalf("first video: status %d, body %q", w.Code, w.Body.String())
+	}
+	if fmt.Sprint(asked) != "[  android_vr tv]" {
+		t.Errorf("asked as %q, want the usual player twice, then android_vr, then tv", asked)
+	}
+	asked = nil
+	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent {
+		t.Fatalf("second video: status %d", w.Code)
+	}
+	if fmt.Sprint(asked) != "[tv]" {
+		t.Errorf("second video asked as %q, want straight to tv", asked)
+	}
+	// Songs are tracked apart: their usual player is still tried first.
+	asked = nil
+	r := httptest.NewRequest("GET", "/api/stream/ccccccccccc", nil)
+	r.SetPathValue("id", "ccccccccccc")
+	s.stream(httptest.NewRecorder(), r)
+	if len(asked) == 0 || asked[0] != "" {
+		t.Errorf("song asked as %q first, want the usual player", asked)
+	}
+}

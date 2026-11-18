@@ -430,6 +430,7 @@ type Format struct {
 	Quality string // audio: low, normal, high
 	Height  string // video: highest picture height, e.g. 720
 	Codecs  string // video: codecs the device can play, best first, e.g. "avc1,vp9"
+	Clients string // YouTube players to ask, e.g. "android_vr,tv" ("" = yt-dlp's choice)
 }
 
 func (f Format) args(videoID string) map[string]string {
@@ -442,6 +443,9 @@ func (f Format) args(videoID string) map[string]string {
 		}
 	} else if f.Quality != "" && f.Quality != "normal" {
 		a["quality"] = f.Quality
+	}
+	if f.Clients != "" {
+		a["clients"] = f.Clients
 	}
 	return a
 }

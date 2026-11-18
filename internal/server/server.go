@@ -48,6 +48,7 @@ type Server struct {
 	token string // lets mpv on this machine fetch streams when auth is on
 
 	mu         sync.Mutex
+	goodPlayer map[string]string      // stream kind -> YouTube player whose streams play
 	clients    map[chan string]string // live-update channel -> account ("" without accounts)
 	sentQVer   int
 	libs       map[string]*store.Store
@@ -511,16 +512,31 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	f := s.format(r)
 	ctx := yt.WithCookies(r.Context(), s.accountCookies(r))
 
-	// get asks YouTube for bytes from..to of the stream, getting a fresh link
-	// once if YouTube refuses the one it has.
+	// get asks YouTube for bytes from..to of the stream. If YouTube refuses
+	// the link, it gets a fresh one, then asks as other YouTube players
+	// (the links some of them give are refused), and remembers which works.
 	var st *yt.Stream
+	kind := f.Kind
+	if kind == "" {
+		kind = "audio"
+	}
+	tries := s.playerTries(kind)
+	try := 0
 	get := func(from, to int64) (*http.Response, error) {
 		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
-			if st == nil || attempt > 0 {
+		for ; try < len(tries); try++ {
+			t := tries[try]
+			if st == nil || t.refresh || try > 0 && tries[try-1].clients != t.clients {
+				g := f
+				g.Clients = t.clients
 				var err error
-				if st, err = s.YT.StreamFormat(ctx, id, f, attempt > 0); err != nil {
-					return nil, err
+				if st, err = s.YT.StreamFormat(ctx, id, g, t.refresh); err != nil {
+					if t.clients == "" {
+						return nil, err // the usual lookup failed: not a refusal
+					}
+					lastErr = err
+					log.Printf("stream %s (%s): asking as YouTube player %s failed: %v", id, kind, t.clients, err)
+					continue
 				}
 			}
 			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
@@ -539,6 +555,8 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
 				resp.Body.Close()
 				lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
+				log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s)", id, kind, st.Format, orDefault(t.clients), resp.Status)
+				s.notePlayer(kind, t.clients, false)
 				continue
 			}
 			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
@@ -549,6 +567,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				resp.Body.Close()
 				return nil, fmt.Errorf("YouTube answered %s", resp.Status)
 			}
+			s.notePlayer(kind, t.clients, true)
 			return resp, nil
 		}
 		return nil, lastErr
@@ -572,7 +591,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	if f.Kind == "video" && start == 0 {
-		log.Printf("video %s: format %s, %s, %dp, %s (device plays %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, f.Codecs)
+		log.Printf("video %s: format %s, %s, %dp, %s, YouTube player %s (device plays %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, orDefault(tries[min(try, len(tries)-1)].clients), f.Codecs)
 	}
 
 	h := w.Header()
@@ -626,6 +645,56 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 }
 
 var errRangeEnd = errors.New("past the end of the stream")
+
+// Other YouTube players to ask when YouTube refuses the stream links yt-dlp's
+// usual ones give: the links of some players are refused without proof only
+// YouTube's own apps can give.
+var otherPlayers = []string{"android_vr", "tv", "web_embedded", "mweb"}
+
+type playerTry struct {
+	clients string // "" = yt-dlp's choice
+	refresh bool
+}
+
+// playerTries lists how to look a stream up: the YouTube player that worked
+// last for this kind of stream (or yt-dlp's choice), a fresh link from it,
+// then the other players.
+func (s *Server) playerTries(kind string) []playerTry {
+	s.mu.Lock()
+	good := s.goodPlayer[kind]
+	s.mu.Unlock()
+	tries := []playerTry{{good, false}, {good, true}}
+	for _, p := range append([]string{""}, otherPlayers...) {
+		if p != good {
+			tries = append(tries, playerTry{p, false})
+		}
+	}
+	return tries
+}
+
+// notePlayer remembers the YouTube player whose streams play, for the next
+// stream of the same kind; one that's refused is forgotten.
+func (s *Server) notePlayer(kind, clients string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goodPlayer == nil {
+		s.goodPlayer = map[string]string{}
+	}
+	old := s.goodPlayer[kind]
+	if ok && clients != old {
+		s.goodPlayer[kind] = clients
+		log.Printf("%s streams now play as YouTube player %s", kind, orDefault(clients))
+	} else if !ok && clients == old && old != "" {
+		delete(s.goodPlayer, kind)
+	}
+}
+
+func orDefault(clients string) string {
+	if clients == "" {
+		return "(yt-dlp's choice)"
+	}
+	return clients
+}
 
 // format reads which stream a request wants: ?q=low|normal|high for audio,
 // or ?kind=video&h=720 for a video picture. Audio defaults to the server's quality.

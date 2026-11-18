@@ -537,8 +537,11 @@ def m_stream(args):
         fmt = AUDIO_FORMATS.get(args.get("quality") or "normal", AUDIO_FORMATS["normal"])
     url = "https://www.youtube.com/watch?v=" + vid
     cookies = args.get("cookies") or ""
+    # Which YouTube players to ask (yt-dlp's choice when empty). The server
+    # tries others when YouTube refuses the streams one of them gives.
+    clients = [c for c in (args.get("clients") or "").split(",") if c.strip()] or None
     try:
-        info = ydl_for(fmt, cookies).extract_info(url, download=False)
+        info = ydl_for(fmt, cookies, clients).extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
         if not sign_in_check(e):
             raise
