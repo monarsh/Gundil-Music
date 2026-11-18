@@ -25,6 +25,7 @@ import (
 	"github.com/monarsh/gundil-music/internal/bluetooth"
 	"github.com/monarsh/gundil-music/internal/model"
 	"github.com/monarsh/gundil-music/internal/player"
+	"github.com/monarsh/gundil-music/internal/remote"
 	"github.com/monarsh/gundil-music/internal/server"
 	"github.com/monarsh/gundil-music/internal/settings"
 	"github.com/monarsh/gundil-music/internal/store"
@@ -62,6 +63,8 @@ func main() {
 	updateNow := flag.Bool("update-youtube", false, "update yt-dlp and ytmusicapi now, then exit")
 	autoUpdate := flag.Bool("auto-update", env("GUNDIL_AUTO_UPDATE", "true") != "false", "update yt-dlp and ytmusicapi daily when newer versions exist")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	modeFlag := flag.String("mode", env("GUNDIL_MODE", ""), "server, or client of the server given with -connect (remembered; also changeable in the app)")
+	connect := flag.String("connect", env("GUNDIL_CONNECT", ""), "be a client of the Gundil Music server at this address, like 192.168.1.20 (remembered)")
 	flag.Parse()
 
 	if *showVersion {
@@ -164,7 +167,31 @@ func main() {
 		return out
 	}
 
-	handler := srv.Handler()
+	sw := remote.New(remote.DefaultPath(*dataDir))
+	sw.Local, sw.Version, sw.Auth, sw.Port = srv.Handler(), version, *auth, tcp.Port
+	sw.Pages, _ = fs.Sub(webFiles, "web")
+	if *connect != "" || *modeFlag != "" {
+		c := sw.Get()
+		if *connect != "" {
+			c = remote.Config{Mode: remote.Client, Server: *connect}
+		}
+		if *modeFlag != "" {
+			c.Mode = *modeFlag
+		}
+		if _, err := sw.Set(c); err != nil {
+			log.Fatalf("cannot set the mode: %v", err)
+		}
+	}
+	sw.OnChange = func(old, now remote.Config) {
+		if now.Mode == remote.Client {
+			pl.Stop() // this computer's speakers now belong to the other server
+			log.Printf("now a client of the server at %s", now.Server)
+		} else {
+			log.Printf("now the server")
+			go logYouTubeStatus(ytc)
+		}
+	}
+	serving := func() bool { return sw.Get().Mode == remote.Server }
 
 	log.Printf("Gundil Music %s", version)
 	go func() {
@@ -172,7 +199,7 @@ func main() {
 		// after start, then once a day, unless turned off in Settings.
 		time.Sleep(3 * time.Minute)
 		for {
-			if cfg.Get().AutoUpdate {
+			if cfg.Get().AutoUpdate && serving() {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 				r, err := ytc.Update(ctx, false)
 				cancel()
@@ -188,19 +215,12 @@ func main() {
 			time.Sleep(24 * time.Hour)
 		}
 	}()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		status := ytc.Status(ctx)
-		if e, ok := status["error"]; ok {
-			log.Printf("YouTube Music is not ready: %v", e)
-		} else if w, ok := status["warning"]; ok {
-			log.Printf("warning: %v", w)
-		} else {
-			log.Printf("YouTube Music ready (ytmusicapi %v, yt-dlp %v, js %v)", status["ytmusicapi"], status["yt_dlp"], status["js"])
-		}
-	}()
-	if !pl.Available() {
+	if serving() {
+		go logYouTubeStatus(ytc)
+	} else {
+		log.Printf("client mode: using the server at %s (change it at http://localhost:%d/_gundil/ or with -mode server)", sw.Get().Server, tcp.Port)
+	}
+	if serving() && !pl.Available() {
 		log.Printf("mpv not found: playing through this machine's speakers is disabled (browser playback still works)")
 	}
 	for _, u := range urls(tcp) {
@@ -219,7 +239,20 @@ func main() {
 		os.Exit(0)
 	}()
 
-	log.Fatal(http.Serve(ln, handler))
+	log.Fatal(http.Serve(ln, sw))
+}
+
+func logYouTubeStatus(ytc *yt.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	status := ytc.Status(ctx)
+	if e, ok := status["error"]; ok {
+		log.Printf("YouTube Music is not ready: %v", e)
+	} else if w, ok := status["warning"]; ok {
+		log.Printf("warning: %v", w)
+	} else {
+		log.Printf("YouTube Music ready (ytmusicapi %v, yt-dlp %v, js %v)", status["ytmusicapi"], status["yt_dlp"], status["js"])
+	}
 }
 
 func fileExists(p string) bool {

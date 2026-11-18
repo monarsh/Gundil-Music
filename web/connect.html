@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gundil Music: server or client</title>
+<link rel="icon" href="/_gundil/icon.svg">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #030303; color: #fff; font: 16px/1.45 Roboto, "Noto Sans", Arial, sans-serif; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 520px; padding: 48px 24px 32px; display: grid; gap: 20px; align-content: start; }
+  .logo { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 700; }
+  h1 { font-size: 26px; margin: 12px 0 0; line-height: 1.25; }
+  h2 { font-size: 17px; margin: 0; }
+  p { margin: 0; color: rgba(255,255,255,.7); }
+  .modes { display: grid; gap: 10px; }
+  .mode { display: flex; gap: 14px; align-items: flex-start; text-align: left; background: #1d1d1d; color: #fff; border: 2px solid transparent; border-radius: 12px; padding: 14px 16px; font: inherit; cursor: pointer; width: 100%; }
+  .mode.on { border-color: #3ea6ff; }
+  .mode b { display: block; font-weight: 500; }
+  .mode span { color: rgba(255,255,255,.6); font-size: 14px; }
+  .radio { width: 20px; height: 20px; border-radius: 50%; border: 2px solid rgba(255,255,255,.5); flex: none; margin-top: 2px; }
+  .mode.on .radio { border-color: #3ea6ff; box-shadow: inset 0 0 0 4px #1d1d1d; background: #3ea6ff; }
+  section { display: grid; gap: 14px; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; height: 48px; border-radius: 24px; border: 0; background: rgba(255,255,255,.1); color: #fff; font: inherit; padding: 0 20px; outline: none; }
+  input:focus { background: #212121; box-shadow: 0 0 0 1px rgba(255,255,255,.3); }
+  button.b { height: 48px; border-radius: 24px; border: 0; padding: 0 20px; font: inherit; font-weight: 500; cursor: pointer; }
+  .primary { background: #fff; color: #030303; }
+  .outline { background: none; color: #fff; border: 1px solid rgba(255,255,255,.25) !important; width: 100%; }
+  button:disabled { opacity: .6; cursor: default; }
+  .error { background: #3b1414; border: 1px solid #6b2020; border-radius: 8px; padding: 12px 14px; color: #fff; }
+  .note { background: #12263a; border: 1px solid #1f4870; border-radius: 8px; padding: 12px 14px; color: #fff; }
+  .servers { display: grid; gap: 8px; }
+  .server { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; background: #1d1d1d; color: #fff; border: 0; border-radius: 12px; padding: 14px 16px; font: inherit; cursor: pointer; }
+  .server b { display: block; font-weight: 500; }
+  .server span { color: rgba(255,255,255,.6); font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3ea6ff; flex: none; }
+  .addrs { margin: 0; padding-left: 20px; color: #fff; }
+  .addrs li { margin: 2px 0; user-select: all; }
+  .spin { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.2); border-top-color: currentColor; border-radius: 50%; animation: s .8s linear infinite; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  a { color: #3ea6ff; }
+  small { color: rgba(255,255,255,.5); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo"><img src="/_gundil/icon.svg" width="32" height="32" alt="">Gundil Music</div>
+  <h1>Server or client?</h1>
+  <p>Gundil Music on this computer can be the <b>server</b> that plays YouTube Music for every device, or a <b>client</b> of a Gundil Music server elsewhere on your network.</p>
+  <div class="error" id="error" hidden></div>
+  <div class="note" id="locked" hidden>The mode can only be changed on the computer running this Gundil Music.</div>
+
+  <div class="modes" id="modes">
+    <button class="mode" data-mode="server"><span class="radio"></span><div><b>This computer is the server</b><span>Fetches music from YouTube Music and keeps your library. Phones and other computers connect to it.</span></div></button>
+    <button class="mode" data-mode="client"><span class="radio"></span><div><b>Connect to another server</b><span>Use the library on a Raspberry Pi, Orange Pi or PC running Gundil Music. Nothing is downloaded from YouTube on this computer.</span></div></button>
+  </div>
+
+  <section id="server" hidden>
+    <h2>Other devices connect to</h2>
+    <ul class="addrs" id="addrs"></ul>
+    <button class="b primary" id="use-server">Use this computer as the server</button>
+  </section>
+
+  <section id="client" hidden>
+    <h2>Server address</h2>
+    <form id="form">
+      <input id="addr" placeholder="192.168.1.20 or pi.local" inputmode="url" autocapitalize="off" autocomplete="off" spellcheck="false" aria-label="Server address">
+      <button class="b primary" id="go">Connect</button>
+    </form>
+    <button class="b outline" id="scan">Find servers on this network</button>
+    <div class="servers" id="servers"></div>
+  </section>
+
+  <p id="open" hidden><a href="/">Open Gundil Music</a></p>
+  <small id="ver"></small>
+</main>
+<script>
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  let info = {}, chosen = 'server';
+  function showError(msg) { $('#error').textContent = msg || ''; $('#error').hidden = !msg; }
+  const err = new URLSearchParams(location.search).get('error');
+  if (err) showError(err);
+
+  async function call(method, path, body) {
+    const r = await fetch('/_gundil/' + path, { method, headers: { 'Content-Type': 'application/json', 'X-Gundil': '1' }, body: body ? JSON.stringify(body) : undefined });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+  function choose(mode) {
+    chosen = mode;
+    document.querySelectorAll('.mode').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    $('#server').hidden = mode !== 'server';
+    $('#client').hidden = mode !== 'client';
+    $('#use-server').hidden = info.mode === 'server';
+    if (mode === 'client' && !$('#servers').childElementCount && info.canChange) scan();
+  }
+  async function load() {
+    info = await call('GET', 'mode');
+    $('#ver').textContent = `${info.hostname} · version ${info.version} · now ${info.mode === 'client' ? 'a client of ' + info.server.replace(/^https?:\/\//, '') : 'the server'}`;
+    $('#addrs').innerHTML = (info.addresses || []).map(a => `<li>${esc(a)}</li>`).join('') || '<li>No network found</li>';
+    if (info.server && !$('#addr').value) $('#addr').value = info.server.replace(/^http:\/\//, '').replace(/:8338$/, '');
+    $('#open').hidden = !!err;
+    $('#locked').hidden = info.canChange;
+    document.querySelectorAll('button, input').forEach(b => { if (!info.canChange && b.id !== 'scan') b.disabled = true; });
+    $('#modes').querySelectorAll('button').forEach(b => b.disabled = !info.canChange);
+    choose(info.mode);
+  }
+  async function setMode(body, btn, label) {
+    showError('');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>' + label;
+    try {
+      await call('PUT', 'mode', body);
+      location.href = '/';
+    } catch (e) {
+      showError(e.message);
+      btn.disabled = false;
+      btn.textContent = btn.dataset.label;
+    }
+  }
+  $('#modes').addEventListener('click', e => { const b = e.target.closest('.mode'); if (b) choose(b.dataset.mode); });
+  $('#use-server').dataset.label = $('#use-server').textContent;
+  $('#use-server').addEventListener('click', () => setMode({ mode: 'server' }, $('#use-server'), 'Starting'));
+  $('#go').dataset.label = 'Connect';
+  $('#form').addEventListener('submit', e => {
+    e.preventDefault();
+    setMode({ mode: 'client', server: $('#addr').value }, $('#go'), 'Connecting');
+  });
+  async function scan() {
+    const b = $('#scan');
+    b.disabled = true;
+    b.innerHTML = '<span class="spin"></span>Looking for servers…';
+    $('#servers').innerHTML = '';
+    let list = [];
+    try { list = await call('GET', 'scan'); } catch (e) { showError(e.message); }
+    b.disabled = false;
+    b.textContent = 'Search again';
+    $('#servers').innerHTML = list.length
+      ? list.map(s => `<button class="server" data-url="${esc(s.url)}"><span class="dot"></span><div><b>${esc(s.hostname || s.url)}</b><span>${esc(s.url.replace('http://', ''))}${s.version ? ' · ' + esc(s.version) : ''}</span></div></button>`).join('')
+      : '<p>No servers found. Check that the server is running and on the same network, or type its address above.</p>';
+  }
+  $('#scan').addEventListener('click', scan);
+  $('#servers').addEventListener('click', e => {
+    const b = e.target.closest('.server');
+    if (!b || !info.canChange) return;
+    $('#addr').value = b.dataset.url.replace(/^http:\/\//, '').replace(/:8338$/, '');
+    setMode({ mode: 'client', server: b.dataset.url }, $('#go'), 'Connecting');
+  });
+  load().catch(e => showError(e.message));
+</script>
+</body>
+</html>

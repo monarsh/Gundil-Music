@@ -1858,7 +1858,9 @@ async function settingsDialog() {
   d.addEventListener('close', () => d.classList.remove('wide'), { once: true });
   bindSettings(d);
   let data = {};
+  const mode = fetch('/_gundil/mode').then(r => r.ok ? r.json() : null).catch(() => null);
   try { data = await api('settings'); } catch (e) { toast(e.message); }
+  S.conn = await mode;
   if (!d.open) return;
   S.settings = data.settings || S.settings;
   S.options = data.options || S.options;
@@ -1875,7 +1877,13 @@ function renderSettings(d) {
   const last = S.info.lastUpdate;
   $('.spinner', d) && $('.spinner', d).remove();
   const body = $('.settings', d) || d.appendChild(Object.assign(document.createElement('div'), { className: 'settings' }));
-  body.innerHTML = `
+  const m = S.conn;
+  const conn = m && m.canChange ? `
+    <h3>This computer</h3>
+    ${setRow(m.mode === 'client' ? `Client of ${m.server.replace(/^https?:\/\//, '')}` : 'This computer is the server',
+      m.mode === 'client' ? 'Your library and YouTube Music come from that server' : `Other devices connect to ${(m.addresses || [])[0] || `port ${location.port || 80}`}`,
+      `<a class="btn small" href="/_gundil/">Change</a>`)}` : '';
+  body.innerHTML = `${conn}
     <h3>Playback on this device</h3>
     ${setRow('Audio quality', 'Lower quality uses less mobile data', `<select data-set="quality">${options(QUALITY, audioQuality())}</select>`)}
     ${setRow('Video quality', 'For the Video side of the Song / Video switch', `<select data-set="videoQuality">${options(VIDEO_QUALITY, local.get('videoQuality', 'auto'))}</select>`)}

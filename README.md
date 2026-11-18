@@ -19,6 +19,7 @@ What you get, laid out like YouTube Music:
 - **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
 - **Background play**: keeps playing when the app is minimised or the screen is off, for free
+- **Server or client**: every Windows, Linux desktop, AppImage and Pi build can be the server or connect to another Gundil Music server
 
 Gundil Music is not affiliated with YouTube or Google. It uses YouTube Music's
 unofficial web API (through [ytmusicapi](https://github.com/sigma67/ytmusicapi))
@@ -85,6 +86,33 @@ The speaker is trusted, so it reconnects on its own after a reboot.
 YouTube changes often; the server updates yt-dlp by itself daily (see
 "Keeping YouTube working" below).
 
+## Server or client
+
+Every build except the Android app can work two ways:
+
+- **Server** (the default): it fetches YouTube Music and keeps your library.
+  Phones and other computers connect to it.
+- **Client**: it uses another Gundil Music server on your network, for example a
+  PC that plays from the Raspberry Pi in the living room. Your library, likes and
+  playlists are the server's, and nothing is fetched from YouTube on the client.
+  It needs no Python. In the cast menu you can play on the computer you're
+  using, on the server's speaker, or on its Bluetooth speaker.
+
+To switch, open **Settings → This computer → Change** in the app, or go to
+`http://localhost:8338/_gundil/`. Choose **Connect to another server**, then either
+type the server's address or pick it from **Find servers on this network**.
+Command line, for headless boxes:
+
+```sh
+gundil-music -connect 192.168.1.20      # become a client of that server (remembered)
+gundil-music -mode server               # back to being the server
+```
+
+The choice is saved in `<data>/mode.json`. Only the computer itself can change
+it. If the server has a password (`-auth`), anyone who knows it can change it
+from another device too. If the server can't be reached, the app shows the
+connect page with the error so you can pick another one.
+
 ## Other machines
 
 ```sh
@@ -101,6 +129,8 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-python` | `GUNDIL_PYTHON` | `python3` in PATH | Python that has ytmusicapi and yt-dlp |
 | `-mpv` | `GUNDIL_MPV` | `mpv` in PATH | mpv for playing on the server |
 | `-auth` | `GUNDIL_AUTH` | none | Require a login, as `user:password` |
+| `-connect` | `GUNDIL_CONNECT` | | Be a client of the Gundil Music server at this address (remembered) |
+| `-mode` | `GUNDIL_MODE` | `server` | `server` or `client` (remembered; also in Settings) |
 | `-open` | | on for Windows | Open the app in the browser after starting |
 | `-auto-update` | `GUNDIL_AUTO_UPDATE` | `true` | Update yt-dlp and ytmusicapi daily when newer versions exist |
 | `-update-youtube` | | | Update yt-dlp and ytmusicapi now, then exit |
