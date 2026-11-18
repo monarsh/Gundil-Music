@@ -451,6 +451,9 @@ type Format struct {
 	Height  string // video: highest picture height, e.g. 720
 	Codecs  string // video: codecs the device can play, best first, e.g. "avc1,vp9"
 	Clients string // YouTube players to ask, e.g. "android_vr,tv" ("" = yt-dlp's choice)
+	// SignedIn looks the stream up signed in with the linked accounts given
+	// with WithCookies, even though YouTube hasn't asked for it.
+	SignedIn bool
 }
 
 func (f Format) args(videoID string) map[string]string {
@@ -466,6 +469,9 @@ func (f Format) args(videoID string) map[string]string {
 	}
 	if f.Clients != "" {
 		a["clients"] = f.Clients
+	}
+	if f.SignedIn {
+		a["signedIn"] = "1" // kept apart from links looked up signed out
 	}
 	return a
 }
@@ -509,7 +515,15 @@ func (c *Client) StreamFormat(ctx context.Context, videoID string, f Format, ref
 	var data json.RawMessage
 	var err error
 	signedIn := false
-	if c.checkActive() && len(files) > 0 {
+	if f.SignedIn {
+		if len(files) == 0 {
+			return nil, errors.New("no linked YouTube account")
+		}
+		if data, err, _ = c.streamSignedIn(ctx, args, files); err != nil {
+			return nil, err
+		}
+		signedIn = true
+	} else if c.checkActive() && len(files) > 0 {
 		// YouTube has been asking this server to sign in: go straight to a
 		// linked account instead of failing the usual way first.
 		var asked bool

@@ -227,8 +227,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/prefetch/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("id"); model.ValidID(id) {
-			f := s.format(r)
-			go s.YT.StreamFormat(yt.WithCookies(context.Background(), s.accountCookies(r)), id, f, false)
+			cookies := s.accountCookies(r)
+			go s.prefetch(yt.WithCookies(context.Background(), cookies), id, s.format(r), len(cookies) > 0)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -460,7 +460,19 @@ func (s *Server) PlayerPrefetch(id string) {
 	if !model.ValidID(id) {
 		return
 	}
-	s.YT.Stream(yt.WithCookies(context.Background(), s.playerCookies()), id, false)
+	cookies := s.playerCookies()
+	s.prefetch(yt.WithCookies(context.Background(), cookies), id, yt.Format{Quality: s.YT.AudioQuality()}, len(cookies) > 0)
+}
+
+// prefetch looks a stream up ahead, as the YouTube player stream asks first.
+func (s *Server) prefetch(ctx context.Context, id string, f yt.Format, haveAccount bool) {
+	kind := f.Kind
+	if kind == "" {
+		kind = "audio"
+	}
+	t := s.playerTries(kind, haveAccount)[0]
+	f.Clients, f.SignedIn = t.clients, t.account
+	s.YT.StreamFormat(ctx, id, f, false)
 }
 
 func (s *Server) ytCall(w http.ResponseWriter, r *http.Request) {
@@ -558,23 +570,21 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = "audio"
 	}
-	tries := s.playerTries(kind)
+	tries := s.playerTries(kind, len(s.accountCookies(r)) > 0)
 	try := 0
 	warned := map[*yt.Stream]bool{}
 	get := func(from, to int64) (*http.Response, error) {
 		var lastErr error
 		for ; try < len(tries); try++ {
 			t := tries[try]
-			if st == nil || t.refresh || try > 0 && tries[try-1].clients != t.clients {
+			if st == nil || t.refresh || try > 0 && tries[try-1] != (playerTry{t.clients, false, t.account}) {
 				g := f
 				g.Clients = t.clients
+				g.SignedIn = t.account
 				var err error
 				if st, err = s.YT.StreamFormat(ctx, id, g, t.refresh); err != nil {
-					if t.clients == "" {
-						return nil, err // the usual lookup failed: not a refusal
-					}
 					lastErr = err
-					log.Printf("stream %s (%s): asking as YouTube player %s failed: %v", id, kind, t.clients, err)
+					log.Printf("stream %s (%s): asking as YouTube player %s failed: %v", id, kind, orDefault(t.name()), err)
 					continue
 				}
 			}
@@ -598,7 +608,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 					resp.Body.Close()
 					refused = true
 					lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
-					log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s; %s)", id, kind, st.Format, orDefault(t.clients), resp.Status, how)
+					log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s; %s)", id, kind, st.Format, orDefault(t.name()), resp.Status, how)
 					if !warned[st] && len(st.Warnings) > 0 {
 						warned[st] = true
 						log.Printf("stream %s: yt-dlp warned while looking it up: %s", id, strings.Join(st.Warnings, " | "))
@@ -608,7 +618,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 					resp.Body.Close()
 					return nil, errRangeEnd
 				case http.StatusOK, http.StatusPartialContent:
-					s.notePlayer(kind, t.clients, true)
+					s.notePlayer(kind, t.name(), true)
 					s.noteRelay(viaRelay, refused)
 					return resp, nil
 				default:
@@ -617,7 +627,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if refused {
-				s.notePlayer(kind, t.clients, false)
+				s.notePlayer(kind, t.name(), false)
 			}
 		}
 		return nil, lastErr
@@ -641,7 +651,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	if f.Kind == "video" && start == 0 {
-		log.Printf("video %s: format %s, %s, %dp, %s, YouTube player %s (device plays %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, orDefault(tries[min(try, len(tries)-1)].clients), f.Codecs)
+		log.Printf("video %s: format %s, %s, %dp, %s, YouTube player %s (device plays %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, orDefault(tries[min(try, len(tries)-1)].name()), f.Codecs)
 	}
 
 	h := w.Header()
@@ -762,48 +772,82 @@ func (s *Server) noteRelay(viaRelay, afterRefusal bool) {
 	}
 }
 
-// Other YouTube players to ask when YouTube refuses the stream links yt-dlp's
-// usual ones give: ones whose plain links YouTube serves without a "PO
-// token" (proof only YouTube's own apps can give; android_vr, ios, mweb and
-// web need one).
-var otherPlayers = []string{"tv_samsung", "visionos", "tv", "tv_downgraded", "web_embedded"}
+// The YouTube player asked first: on networks YouTube distrusts, the links
+// of yt-dlp's usual mix are refused, while visionos's still play (seen with
+// -diagnose-youtube).
+const firstPlayer = "visionos"
+
+// Other YouTube players to ask when YouTube refuses the stream links of the
+// first: yt-dlp's choice, then ones whose plain links YouTube serves without
+// a "PO token" (proof only YouTube's own apps can give; android_vr, ios,
+// mweb and web need one).
+var otherPlayers = []string{"", "tv_samsung", "web_embedded", "tv", "tv_downgraded"}
+
+// signedInPlayer is what goodPlayer holds once streams play only signed in.
+const signedInPlayer = "+account"
 
 type playerTry struct {
 	clients string // "" = yt-dlp's choice
 	refresh bool
+	account bool // signed in with a linked YouTube account
 }
 
 // playerTries lists how to look a stream up: the YouTube player that worked
-// last for this kind of stream (or yt-dlp's choice), a fresh link from it,
-// then the other players.
-func (s *Server) playerTries(kind string) []playerTry {
+// last for this kind of stream (or the first player), a fresh link from it,
+// the other players, and last, when there's a linked account, signed in
+// (YouTube serves signed-in players where it refuses signed-out ones).
+func (s *Server) playerTries(kind string, haveAccount bool) []playerTry {
 	s.mu.Lock()
-	good := s.goodPlayer[kind]
+	good, ok := s.goodPlayer[kind]
 	s.mu.Unlock()
-	tries := []playerTry{{good, false}, {good, true}}
-	for _, p := range append([]string{""}, otherPlayers...) {
+	if !ok || good == signedInPlayer && !haveAccount {
+		good = firstPlayer
+	}
+	var tries []playerTry
+	if good == signedInPlayer {
+		tries = []playerTry{{"web_embedded", false, true}, {"web_embedded", true, true}}
+	} else {
+		tries = []playerTry{{good, false, false}, {good, true, false}}
+	}
+	for _, p := range append([]string{firstPlayer}, otherPlayers...) {
 		if p != good {
-			tries = append(tries, playerTry{p, false})
+			tries = append(tries, playerTry{p, false, false})
 		}
+	}
+	if haveAccount && good != signedInPlayer {
+		tries = append(tries, playerTry{"web_embedded", false, true})
 	}
 	return tries
 }
 
 // notePlayer remembers the YouTube player whose streams play, for the next
 // stream of the same kind; one that's refused is forgotten.
-func (s *Server) notePlayer(kind, clients string, ok bool) {
+func (s *Server) notePlayer(kind, player string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.goodPlayer == nil {
 		s.goodPlayer = map[string]string{}
 	}
-	old := s.goodPlayer[kind]
-	if ok && clients != old {
-		s.goodPlayer[kind] = clients
-		log.Printf("%s streams now play as YouTube player %s", kind, orDefault(clients))
-	} else if !ok && clients == old && old != "" {
+	old, have := s.goodPlayer[kind]
+	switch {
+	case ok && (!have || player != old):
+		s.goodPlayer[kind] = player
+		if player == signedInPlayer {
+			log.Printf("%s streams now play signed in with the linked YouTube account", kind)
+		} else if have || player != firstPlayer {
+			log.Printf("%s streams now play as YouTube player %s", kind, orDefault(player))
+		}
+	case !ok && have && player == old:
 		delete(s.goodPlayer, kind)
 	}
+}
+
+// name is how notePlayer knows a way of looking streams up.
+func (t playerTry) name() string {
+	if t.account {
+		return signedInPlayer
+	}
+	return t.clients
 }
 
 func orUnknown(s string) string {
@@ -814,8 +858,11 @@ func orUnknown(s string) string {
 }
 
 func orDefault(clients string) string {
-	if clients == "" {
+	switch clients {
+	case "":
 		return "(yt-dlp's choice)"
+	case signedInPlayer:
+		return "web_embedded, signed in with the linked account"
 	}
 	return clients
 }

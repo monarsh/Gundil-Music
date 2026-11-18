@@ -166,8 +166,8 @@ for line in sys.stdin:
 	if w := play("aaaaaaaaaaa"); w.Code != http.StatusPartialContent || !bytes.Equal(w.Body.Bytes(), data) {
 		t.Fatalf("first video: status %d, body %q", w.Code, w.Body.String())
 	}
-	if fmt.Sprint(asked) != "[  tv_samsung visionos tv]" {
-		t.Errorf("asked as %q, want the usual player twice, then tv_samsung, visionos, tv", asked)
+	if fmt.Sprint(asked) != "[visionos visionos  tv_samsung web_embedded tv]" {
+		t.Errorf("asked as %q, want visionos twice, then yt-dlp's choice, tv_samsung, web_embedded, tv", asked)
 	}
 	asked = nil
 	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent {
@@ -176,13 +176,13 @@ for line in sys.stdin:
 	if fmt.Sprint(asked) != "[tv]" {
 		t.Errorf("second video asked as %q, want straight to tv", asked)
 	}
-	// Songs are tracked apart: their usual player is still tried first.
+	// Songs are tracked apart: the first player is still tried first.
 	asked = nil
 	r := httptest.NewRequest("GET", "/api/stream/ccccccccccc", nil)
 	r.SetPathValue("id", "ccccccccccc")
 	s.stream(httptest.NewRecorder(), r)
-	if len(asked) == 0 || asked[0] != "" {
-		t.Errorf("song asked as %q first, want the usual player", asked)
+	if len(asked) == 0 || asked[0] != "visionos" {
+		t.Errorf("song asked as %q first, want visionos", asked)
 	}
 }
 
@@ -281,5 +281,67 @@ for line in sys.stdin:
 	}
 	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent || atomic.LoadInt32(&direct) != 1 {
 		t.Errorf("next stream: status %d, own connection tried %d times in all", w.Code, atomic.LoadInt32(&direct))
+	}
+}
+
+// YouTube refuses every signed-out player (as on a distrusted network) but
+// serves the linked account: the stream plays signed in, and the next one
+// goes signed in straight away.
+func TestStreamSignedInLast(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not found")
+	}
+	var asked []string
+	gv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := r.URL.Query().Get("c")
+		asked = append(asked, c)
+		if c != "account" {
+			http.Error(w, "no", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Range", "bytes 0-4/5")
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write([]byte("hello"))
+	}))
+	defer gv.Close()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "google-cookies.txt"), []byte("# Netscape HTTP Cookie File\n"), 0o600)
+	helper := filepath.Join(dir, "helper.py")
+	os.WriteFile(helper, []byte(`
+import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    a = req.get("args") or {}
+    c = "account" if a.get("cookies") else a.get("clients", "")
+    out = {"id": req["id"], "result": {"url": "`+gv.URL+`/videoplayback?c=" + c, "mime": "audio/webm", "expires": 0}}
+    if req["method"] == "relay":
+        out = {"id": req["id"], "error": "no relay here"}
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+`), 0o644)
+	ytc, err := yt.New(py, helper, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ytc.Close()
+	s := &Server{YT: ytc, DataDir: dir}
+	play := func(id string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/stream/"+id, nil)
+		r.SetPathValue("id", id)
+		r.Header.Set("Range", "bytes=0-")
+		w := httptest.NewRecorder()
+		s.stream(w, r)
+		return w
+	}
+	if w := play("aaaaaaaaaaa"); w.Code != http.StatusPartialContent || w.Body.String() != "hello" {
+		t.Fatalf("status %d, body %q", w.Code, w.Body.String())
+	}
+	if last := asked[len(asked)-1]; last != "account" || len(asked) < 3 {
+		t.Errorf("asked as %q, want the signed-out players, then signed in", asked)
+	}
+	asked = nil
+	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent || fmt.Sprint(asked) != "[account]" {
+		t.Errorf("next stream: status %d, asked as %q, want straight signed in", w.Code, asked)
 	}
 }

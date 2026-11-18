@@ -502,7 +502,7 @@ def video_format(height, codecs=""):
 
 
 # Other YouTube players to ask when the usual ones get "confirm you're not a bot".
-OTHER_CLIENTS = ["tv_samsung", "visionos", "web_embedded"]  # players YouTube serves without a PO token
+OTHER_CLIENTS = ["visionos", "tv_samsung", "web_embedded"]  # players YouTube serves without a PO token
 
 
 IPV4 = os.environ.get("GUNDIL_YT_IPV6", "") != "1"  # GUNDIL_YT_IPV6=1 on IPv6-only networks
