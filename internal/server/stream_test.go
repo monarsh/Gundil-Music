@@ -166,8 +166,8 @@ for line in sys.stdin:
 	if w := play("aaaaaaaaaaa"); w.Code != http.StatusPartialContent || !bytes.Equal(w.Body.Bytes(), data) {
 		t.Fatalf("first video: status %d, body %q", w.Code, w.Body.String())
 	}
-	if fmt.Sprint(asked) != "[  android_vr tv]" {
-		t.Errorf("asked as %q, want the usual player twice, then android_vr, then tv", asked)
+	if fmt.Sprint(asked) != "[  tv_samsung visionos tv]" {
+		t.Errorf("asked as %q, want the usual player twice, then tv_samsung, visionos, tv", asked)
 	}
 	asked = nil
 	if w := play("bbbbbbbbbbb"); w.Code != http.StatusPartialContent {

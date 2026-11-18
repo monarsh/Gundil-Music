@@ -304,6 +304,8 @@ func callTimeout(method string) time.Duration {
 		return 5 * time.Minute
 	case "stream", "ping", "options":
 		return 60 * time.Second
+	case "diagnose":
+		return 2 * time.Minute
 	}
 	return 30 * time.Second
 }

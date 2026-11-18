@@ -502,7 +502,7 @@ def video_format(height, codecs=""):
 
 
 # Other YouTube players to ask when the usual ones get "confirm you're not a bot".
-OTHER_CLIENTS = ["tv_simply", "mweb", "web_embedded"]
+OTHER_CLIENTS = ["tv_samsung", "visionos", "web_embedded"]  # players YouTube serves without a PO token
 
 
 IPV4 = os.environ.get("GUNDIL_YT_IPV6", "") != "1"  # GUNDIL_YT_IPV6=1 on IPv6-only networks
@@ -606,6 +606,82 @@ def m_stream(args):
         "format": info.get("format_id") or "", "vcodec": info.get("vcodec") or "", "protocol": info.get("protocol") or "",
         "warnings": _local.warnings,
     }
+
+
+# ---------- diagnosis ----------
+# gundil-music -diagnose-youtube: looks one video up as each YouTube player,
+# over IPv4 and IPv6, and tries a little of each kind of stream, so one run
+# shows which way (if any) YouTube still serves this network.
+
+def m_diagnose(args):
+    from yt_dlp.networking import Request
+    from urllib.parse import urljoin
+    vid = args.get("videoId") or "60ItHLz5WEA"
+    client = args.get("client") or ""
+    family = args.get("family") or "IPv4"
+    opts = {
+        "quiet": True, "logger": _WARNINGS, "skip_download": True, "noplaylist": True,
+        "format": "bestaudio/best", "ignore_no_formats_error": True,
+        "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
+        "source_address": "::" if family == "IPv6" else "0.0.0.0",
+    }
+    if args.get("cookies"):
+        opts["cookiefile"] = args["cookies"]
+    if client:
+        opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+    _local.warnings = []
+    ydl = yt_dlp.YoutubeDL(opts)
+
+    def short(msg):
+        msg = str(msg).replace("ERROR: ", "").replace("[youtube] %s: " % vid, "")
+        return msg.split(". ")[0][:110]
+
+    def tried(link, headers):
+        try:
+            r = ydl.urlopen(Request(link, headers={**(headers or {}), "Range": "bytes=0-1023"}))
+            r.read(1024)
+            r.close()
+            return str(r.status)
+        except Exception as e:  # noqa: BLE001
+            return str(getattr(e, "status", "") or short(e)[:40])
+
+    try:
+        info = ydl.extract_info("https://www.youtube.com/watch?v=" + vid, download=False)
+    except Exception as e:  # noqa: BLE001
+        return {"line": "lookup failed: " + short(e), "works": []}
+    fmts = info.get("formats") or []
+    https = [f for f in fmts if f.get("protocol") == "https"]
+    hls = [f for f in fmts if "m3u8" in (f.get("protocol") or "")]
+    audio = sorted((f for f in https if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")),
+                   key=lambda f: f.get("abr") or f.get("tbr") or 0)
+    video = sorted((f for f in https if f.get("vcodec") not in (None, "none") and f.get("acodec") in (None, "none")
+                    and (f.get("height") or 0) <= 720), key=lambda f: f.get("height") or 0)
+    parts, works = ["%3d formats (https %d, hls %d)" % (len(fmts), len(https), len(hls))], []
+    for name, pick in (("audio", audio), ("video", video)):
+        if pick:
+            f = pick[-1]
+            st = tried(f["url"], f.get("http_headers"))
+            parts.append("%s %s: %s" % (name, f.get("format_id"), st))
+            if st in ("200", "206"):
+                works.append(name)
+    if hls:
+        f = hls[0]
+        st = "?"
+        try:
+            r = ydl.urlopen(Request(f["url"], headers=f.get("http_headers") or {}))
+            text = r.read().decode("utf-8", "replace")
+            r.close()
+            seg = next((ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")), "")
+            st = tried(urljoin(f["url"], seg), f.get("http_headers")) if seg else "empty playlist"
+        except Exception as e:  # noqa: BLE001
+            st = "playlist " + str(getattr(e, "status", "") or short(e)[:40])
+        parts.append("hls %s: %s" % (f.get("format_id"), st))
+        if st in ("200", "206"):
+            works.append("hls")
+    line = " | ".join(parts)
+    if _local.warnings:
+        line += "\n        warned: " + " / ".join(dict.fromkeys(short(w) for w in _local.warnings))
+    return {"line": line, "works": works}
 
 
 # ---------- relay ----------

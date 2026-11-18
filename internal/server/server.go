@@ -763,9 +763,10 @@ func (s *Server) noteRelay(viaRelay, afterRefusal bool) {
 }
 
 // Other YouTube players to ask when YouTube refuses the stream links yt-dlp's
-// usual ones give: the links of some players are refused without proof only
-// YouTube's own apps can give.
-var otherPlayers = []string{"android_vr", "tv", "web_embedded", "mweb"}
+// usual ones give: ones whose plain links YouTube serves without a "PO
+// token" (proof only YouTube's own apps can give; android_vr, ios, mweb and
+// web need one).
+var otherPlayers = []string{"tv_samsung", "visionos", "tv", "tv_downgraded", "web_embedded"}
 
 type playerTry struct {
 	clients string // "" = yt-dlp's choice

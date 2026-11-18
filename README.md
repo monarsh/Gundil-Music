@@ -158,6 +158,7 @@ Open the printed address (default `http://<this-machine>:8338`).
 | `-open` | | on for Windows | Open the app in the browser after starting |
 | `-auto-update` | `GUNDIL_AUTO_UPDATE` | `true` | Update yt-dlp and ytmusicapi daily when newer versions exist |
 | `-update-youtube` | | | Update yt-dlp and ytmusicapi now, then exit |
+| `-diagnose-youtube [video id]` | | | Try every way of getting streams from YouTube on this network, print what works, then exit |
 | `-reset-password` | | | Set an account's password, as `name:newpassword`, then exit |
 | `-cookies` | `GUNDIL_COOKIES` | `<data>/cookies.txt` if present | YouTube cookies, for when YouTube asks the server to sign in |
 | | `GUNDIL_REGION` | | Country code for YouTube Music results, e.g. `US`, `IN` |
@@ -188,6 +189,18 @@ are told about it: they show the new versions, reload a page that had failed,
 and retry a song that couldn't be played. After `-update-youtube` or
 `update-youtube.sh` from the command line, restart the server (the script does
 this for you). Turn the daily check off in Settings or with `-auto-update=false`.
+
+### Songs won't play: "YouTube refused the stream" (403)
+
+Run the diagnosis on the server's computer, with Gundil Music quit:
+
+- AppImage: `./Gundil_Music-…-x86_64.AppImage -diagnose-youtube`
+- Windows: `gundil-music.exe -diagnose-youtube`
+- anywhere else: `gundil-music -diagnose-youtube`
+
+It looks one video up as each YouTube player, over IPv4 and IPv6 (and with a
+linked account, if there is one), tries a little of each kind of stream, and
+ends with what works on this network. Add a video id to try another video.
 
 ### "Sign in to confirm you're not a bot"
 

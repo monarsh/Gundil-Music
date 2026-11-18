@@ -63,6 +63,7 @@ func main() {
 	cookies := flag.String("cookies", env("GUNDIL_COOKIES", ""), "cookies.txt for YouTube, if it asks this server to sign in")
 	open := flag.Bool("open", runtime.GOOS == "windows", "open the app in the web browser once started")
 	updateNow := flag.Bool("update-youtube", false, "update yt-dlp and ytmusicapi now, then exit")
+	diagnose := flag.Bool("diagnose-youtube", false, "try each way of getting streams from YouTube on this network, print what works, then exit (optionally give a video id)")
 	autoUpdate := flag.Bool("auto-update", env("GUNDIL_AUTO_UPDATE", "true") != "false", "update yt-dlp and ytmusicapi daily when newer versions exist")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	resetPassword := flag.String("reset-password", "", "set a Gundil Music account's password, as name:newpassword, then exit")
@@ -110,6 +111,11 @@ func main() {
 	ytc, err := yt.New(*python, *helper, *dataDir)
 	if err != nil {
 		log.Fatalf("cannot set up the YouTube helper: %v", err)
+	}
+	if *diagnose {
+		diagnoseYouTube(ytc, flag.Arg(0), *dataDir)
+		ytc.Close()
+		return
 	}
 	if *updateNow {
 		fmt.Println("Updating YouTube support (yt-dlp, ytmusicapi)...")
@@ -367,4 +373,69 @@ func urls(a *net.TCPAddr) []string {
 		}
 	}
 	return out
+}
+
+// diagnoseYouTube looks one video up as each YouTube player, over IPv4 and
+// IPv6 (and with a linked Google account, if there is one), tries a little
+// of each kind of stream, and prints what YouTube serves this network.
+func diagnoseYouTube(ytc *yt.Client, id, dataDir string) {
+	if id == "" {
+		id = "60ItHLz5WEA"
+	}
+	ctx := context.Background()
+	if data, err := ytc.Call(ctx, "ping", nil); err == nil {
+		fmt.Printf("Gundil Music %s, %s\n", version, data)
+	}
+	cookies, _ := filepath.Glob(filepath.Join(dataDir, "google-cookies.txt"))
+	more, _ := filepath.Glob(filepath.Join(dataDir, "users", "*", "google-cookies.txt"))
+	cookies = append(cookies, more...)
+	fmt.Printf("Trying video %s; this takes a minute or two.\n\n", id)
+	type way struct{ family, client, cookies string }
+	var ways []way
+	for _, fam := range []string{"IPv4", "IPv6"} {
+		for _, c := range []string{"", "tv_samsung", "tv", "tv_downgraded", "visionos", "web_safari", "web", "web_embedded", "mweb", "android_vr", "ios"} {
+			ways = append(ways, way{fam, c, ""})
+		}
+		if len(cookies) > 0 {
+			for _, c := range []string{"", "tv", "web_embedded", "web_safari", "web"} {
+				ways = append(ways, way{fam, c, cookies[0]})
+			}
+		}
+	}
+	var working []string
+	for _, w := range ways {
+		name := w.client
+		if name == "" {
+			name = "(default)"
+		}
+		if w.cookies != "" {
+			name += " +account"
+		}
+		args := map[string]string{"videoId": id, "client": w.client, "family": w.family}
+		if w.cookies != "" {
+			args["cookies"] = w.cookies
+		}
+		label := fmt.Sprintf("%s %-22s", w.family, name)
+		data, err := ytc.Call(ctx, "diagnose", args)
+		if err != nil {
+			fmt.Printf("%s %v\n", label, err)
+			continue
+		}
+		var r struct {
+			Line  string   `json:"line"`
+			Works []string `json:"works"`
+		}
+		json.Unmarshal(data, &r)
+		fmt.Printf("%s %s\n", label, r.Line)
+		for _, k := range r.Works {
+			working = append(working, fmt.Sprintf("%s %s (%s)", w.family, name, k))
+		}
+	}
+	fmt.Println()
+	if len(working) == 0 {
+		fmt.Println("YouTube served no stream on this network in any of these ways.")
+	} else {
+		fmt.Println("Works: " + strings.Join(working, ", "))
+	}
+	fmt.Println("Copy everything above and send it to whoever helps you with Gundil Music.")
 }
