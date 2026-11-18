@@ -180,3 +180,21 @@ for line in sys.stdin:
 		t.Errorf("song asked as %q first, want the usual player", asked)
 	}
 }
+
+func TestClientForLinkAddress(t *testing.T) {
+	cases := map[string]string{
+		"https://rr1---sn-x.googlevideo.com/videoplayback?expire=1&ip=203.0.113.7&id=o-x":     "IPv4",
+		"https://rr1---sn-x.googlevideo.com/videoplayback?ip=2001%3Adb8%3A%3A1&id=o-x":        "IPv6",
+		"https://rr1---sn-x.googlevideo.com/videoplayback?ip=%3A%3Affff%3A203.0.113.7&itag=1": "IPv4",
+		"https://example.com/a.wav": "",
+	}
+	for link, want := range cases {
+		c, got := clientFor(link)
+		if got != want {
+			t.Errorf("%s: %q, want %q", link, got, want)
+		}
+		if (want == "IPv4") != (c == streamClient4) || (want == "IPv6") != (c == streamClient6) {
+			t.Errorf("%s: wrong client", link)
+		}
+	}
+}

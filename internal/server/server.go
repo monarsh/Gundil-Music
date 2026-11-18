@@ -14,6 +14,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -87,13 +90,47 @@ func (s *Server) Warm() {
 	}
 }
 
-var streamClient = &http.Client{Transport: &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
-	DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
-	TLSHandshakeTimeout:   15 * time.Second,
-	ResponseHeaderTimeout: 30 * time.Second,
-	MaxIdleConnsPerHost:   8,
-}}
+// YouTube ties a stream link to the internet address that looked it up
+// (its ip= part) and refuses it (403) from any other. On a computer with
+// both IPv4 and IPv6, yt-dlp may look a link up over one and the server
+// fetch it over the other, so streams are fetched over the same kind of
+// address the link names: each kind has its own client (and connections).
+func streamTransport(network string) *http.Client {
+	d := &net.Dialer{Timeout: 15 * time.Second}
+	return &http.Client{Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return d.DialContext(ctx, network, addr)
+		},
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   8,
+	}}
+}
+
+var (
+	streamClient  = streamTransport("tcp")
+	streamClient4 = streamTransport("tcp4")
+	streamClient6 = streamTransport("tcp6")
+)
+
+// clientFor picks the client that fetches over the kind of address a
+// stream link is for, and names that kind ("" when the link doesn't say).
+func clientFor(link string) (*http.Client, string) {
+	u, err := url.Parse(link)
+	if err != nil {
+		return streamClient, ""
+	}
+	ip, err := netip.ParseAddr(u.Query().Get("ip"))
+	switch {
+	case err != nil:
+		return streamClient, ""
+	case ip.Is4() || ip.Is4In6():
+		return streamClient4, "IPv4"
+	default:
+		return streamClient6, "IPv6"
+	}
+}
 
 // StreamURL is what the server's own player opens for a video.
 func (s *Server) StreamURL(id string) (string, bool) {
@@ -547,7 +584,12 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				req.Header.Set(k, v)
 			}
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", from, to))
-			resp, err := streamClient.Do(req)
+			client, family := clientFor(st.URL)
+			var local string
+			req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+				GotConn: func(c httptrace.GotConnInfo) { local = c.Conn.LocalAddr().String() },
+			}))
+			resp, err := client.Do(req)
 			if err != nil {
 				lastErr = err
 				continue
@@ -555,7 +597,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
 				resp.Body.Close()
 				lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
-				log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s)", id, kind, st.Format, orDefault(t.clients), resp.Status)
+				log.Printf("stream %s (%s, format %s, YouTube player %s): YouTube refused it (%s; link for %s, fetched from %s)", id, kind, st.Format, orDefault(t.clients), resp.Status, orUnknown(family), local)
 				s.notePlayer(kind, t.clients, false)
 				continue
 			}
@@ -687,6 +729,13 @@ func (s *Server) notePlayer(kind, clients string, ok bool) {
 	} else if !ok && clients == old && old != "" {
 		delete(s.goodPlayer, kind)
 	}
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "an unnamed address"
+	}
+	return s
 }
 
 func orDefault(clients string) string {

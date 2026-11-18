@@ -505,6 +505,9 @@ def video_format(height, codecs=""):
 OTHER_CLIENTS = ["tv_simply", "mweb", "web_embedded"]
 
 
+IPV4 = os.environ.get("GUNDIL_YT_IPV6", "") != "1"  # GUNDIL_YT_IPV6=1 on IPv6-only networks
+
+
 def ydl_for(fmt, cookies="", clients=None):
     cookies = cookies or COOKIES
     key = (fmt, cookies, tuple(clients or ()))
@@ -515,6 +518,12 @@ def ydl_for(fmt, cookies="", clients=None):
                 "format": fmt,
                 "js_runtimes": {"deno": {}, "node": {}, "bun": {}, "quickjs": {}},
             }
+            if IPV4:
+                # Stream links only work from the address that looked them up. A
+                # home connection has one public IPv4 address but often several
+                # changing IPv6 ones, so look links up over IPv4 (the server then
+                # fetches them over IPv4 too).
+                opts["source_address"] = "0.0.0.0"
             if cookies:
                 opts["cookiefile"] = cookies
             if clients:
@@ -541,7 +550,18 @@ def m_stream(args):
     # tries others when YouTube refuses the streams one of them gives.
     clients = [c for c in (args.get("clients") or "").split(",") if c.strip()] or None
     try:
-        info = ydl_for(fmt, cookies, clients).extract_info(url, download=False)
+        try:
+            info = ydl_for(fmt, cookies, clients).extract_info(url, download=False)
+        except Exception as e:  # noqa: BLE001
+            m = str(e).lower()
+            if not IPV4 or not any(w in m for w in ("network is unreachable", "no route to host", "address family",
+                                                    "cannot assign requested address", "errno 101", "errno 99")):
+                raise
+            # No IPv4 here after all: look it up over any address.
+            globals()["IPV4"] = False
+            with _ydl_lock:
+                _ydl.clear()
+            info = ydl_for(fmt, cookies, clients).extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
         if not sign_in_check(e):
             raise
@@ -602,7 +622,10 @@ def handle(req):
                 # Keep "sign in to confirm": the server looks for it to retry with a linked account.
                 msg = ("YouTube asked this server to sign in to confirm you're not a bot (this happens on some networks). "
                        "Link your Google account in Settings and Gundil Music will use it whenever this happens.")
-        traceback.print_exc(file=sys.stderr)
+        if "yt_dlp" in sys.modules and isinstance(e, getattr(yt_dlp.utils, "DownloadError", ())):
+            pass  # YouTube's answer: the server logs it in one line, no traceback needed
+        else:
+            traceback.print_exc(file=sys.stderr)
         send({"id": rid, "error": msg[:500]})
 
 
