@@ -175,8 +175,15 @@ function register(v) {
   return k;
 }
 
-const audio = new Audio();
-audio.preload = 'auto';
+/* Two players, so songs can crossfade: `audio` is the one playing now, the
+   other fades the next song in (see crossfade below) and then takes over. */
+const decks = [new Audio(), new Audio()];
+let audio = decks[0];
+for (const d of decks) d.preload = 'auto';
+/* Listens to whichever player is current; the other one's events are ignored. */
+function onAudio(type, fn) {
+  for (const d of decks) d.addEventListener(type, e => { if (d === audio) fn(e); });
+}
 const isServer = () => S.output === 'server';
 const audioQuality = () => local.get('quality', 'normal');
 const streamSrc = id => `/api/stream/${id}?q=${audioQuality()}`;
@@ -319,7 +326,10 @@ function loadLocal(play, at = 0, ready = false) {
     });
     return;
   }
-  audio.src = streamSrc(t.videoId);
+  if (!fadeKeep) endFade();
+  fadeKeep = false;
+  const src = streamSrc(t.videoId);
+  if (audio.getAttribute('src') !== src) audio.src = src;
   if (at > 0) audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
   S.playing = true;
   S.paused = !play;
@@ -447,6 +457,7 @@ function toggle() {
   if (!S.queue.length) return;
   if (isServer()) return srv('toggle');
   if (!audio.src) return loadLocal(true);
+  endFade();
   if (audio.paused) audio.play().catch(() => {}); else audio.pause();
 }
 
@@ -461,6 +472,7 @@ async function next() {
 function prev() {
   if (!S.queue.length) return;
   if (isServer()) return srv('prev');
+  endFade();
   if (audio.currentTime > 3 || S.index <= 0) { audio.currentTime = 0; return; }
   S.index--;
   loadLocal(true);
@@ -477,6 +489,7 @@ function seek(sec) {
   S.position = sec;
   renderProgress();
   if (isServer()) return srv('seek', { position: sec });
+  endFade();
   if (audio.src) audio.currentTime = sec;
   if (video.getAttribute('src') && video.readyState > 0) video.currentTime = sec;
 }
@@ -485,8 +498,8 @@ function setVolume(v) {
   S.volume = v;
   S.muted = false;
   if (isServer()) return srv('volume', { volume: v });
-  audio.volume = v / 100;
-  audio.muted = false;
+  audio.volume = fade ? audio.volume : v / 100; // a crossfade sets it as it goes
+  for (const d of decks) d.muted = false;
   local.set('volume', v);
   renderVolume();
 }
@@ -497,7 +510,7 @@ function toggleMute() {
     return;
   }
   S.muted = !S.muted;
-  audio.muted = S.muted;
+  for (const d of decks) d.muted = S.muted;
   renderVolume();
 }
 
@@ -547,6 +560,7 @@ async function setOutput(out) {
   S.output = out;
   local.set('output', out);
   if (out === 'server') {
+    endFade();
     audio.pause();
     audio.removeAttribute('src');
     if (tracks.length && index >= 0) {
@@ -575,23 +589,24 @@ async function setOutput(out) {
   renderPlayer();
 }
 
-audio.addEventListener('timeupdate', () => {
+onAudio('timeupdate', () => {
   if (isServer()) return;
   S.position = audio.currentTime;
+  maybeCrossfade();
   renderProgress();
   if (videoShown) fixDrift(false);
   if (S.sleep.at && Date.now() >= S.sleep.at) sleepNow(); // timers can be slowed in the background
 });
-audio.addEventListener('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
-audio.addEventListener('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
-audio.addEventListener('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
-audio.addEventListener('pause', () => { if (!isServer()) { S.paused = true; renderPlayer(); } });
-audio.addEventListener('loadedmetadata', () => {
+onAudio('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
+onAudio('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
+onAudio('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
+onAudio('pause', () => { if (!isServer()) { S.paused = true; renderPlayer(); } });
+onAudio('loadedmetadata', () => {
   if (isServer() || !isFinite(audio.duration)) return;
   S.duration = audio.duration;
   renderProgress();
 });
-audio.addEventListener('ended', async () => {
+onAudio('ended', async () => {
   if (isServer()) return;
   if (S.sleep.end) {
     // Sleep timer: stop at the end of this song, ready with the next one.
@@ -606,7 +621,7 @@ audio.addEventListener('ended', async () => {
   S.paused = true;
   renderPlayer();
 });
-audio.addEventListener('error', async () => {
+onAudio('error', async () => {
   if (isServer() || !audio.getAttribute('src')) return;
   S.loading = false;
   errorsInRow++;
@@ -871,11 +886,73 @@ async function setSleep(minutes, end) {
   sleepToast(minutes, end);
   renderPlayer();
 }
+/* ---------- crossfade (on this device) ---------- */
+let fade = null, fadeKeep = false, fadeTimer = null;
+const crossfadeSecs = () => +local.get('crossfade', 0) || 0;
+
+/* The song after this one, if one follows by itself. */
+function nextIndex() {
+  if (S.index + 1 < S.queue.length) return S.index + 1;
+  return S.repeat === 'all' && S.queue.length > 1 ? 0 : -1;
+}
+
+function maybeCrossfade() {
+  if (fade) return stepFade();
+  const secs = crossfadeSecs();
+  if (!secs || isServer() || audio.paused || S.mode === 'video' || S.repeat === 'one' || S.sleep.end) return;
+  const dur = audio.duration;
+  if (!isFinite(dur) || dur < secs * 3) return; // too short to fade over
+  const left = dur - audio.currentTime;
+  const ni = nextIndex();
+  if (ni < 0) return;
+  const other = decks[0] === audio ? decks[1] : decks[0];
+  const nsrc = streamSrc(S.queue[ni].videoId);
+  // Start loading the next song a little early, so it's ready to fade in.
+  if (left <= secs + 12 && other.getAttribute('src') !== nsrc) { other.src = nsrc; other.volume = 0; other.load(); }
+  if (left > secs) return;
+  // Start the fade: the other player becomes the current one.
+  const out = audio;
+  fade = { out, start: Date.now(), ms: Math.max(1000, left * 1000) };
+  audio = other;
+  audio.volume = 0;
+  out.addEventListener('ended', endFade, { once: true });
+  S.index = ni;
+  fadeKeep = true;
+  loadLocal(true);
+  fadeTimer = setInterval(stepFade, 100); // smooth while visible; timeupdate keeps it going in the background
+  stepFade();
+}
+
+function stepFade() {
+  if (!fade) return;
+  const p = Math.min(1, (Date.now() - fade.start) / fade.ms);
+  const v = S.muted ? 0 : S.volume / 100;
+  // Equal-power curves: the loudness stays even through the fade.
+  audio.volume = v * Math.sin(p * Math.PI / 2);
+  fade.out.volume = v * Math.cos(p * Math.PI / 2);
+  if (p >= 1) endFade();
+}
+
+/* Finishes a crossfade at once: the old song stops, the new one is at full volume. */
+function endFade() {
+  clearInterval(fadeTimer);
+  fadeTimer = null;
+  if (!fade) return;
+  const out = fade.out;
+  fade = null;
+  out.removeEventListener('ended', endFade);
+  out.pause();
+  out.removeAttribute('src');
+  out.load();
+  audio.volume = S.volume / 100;
+}
+
 function sleepNow() {
   clearTimeout(sleepTimer);
   sleepTimer = null;
   S.sleep = { at: 0, end: false };
   renderSleep();
+  endFade();
   if (isServer() || audio.paused) return;
   const vol = audio.volume;
   let i = 0;
@@ -2215,6 +2292,7 @@ async function importDialog(prefill = '') {
    settings
    ========================================================================= */
 const QUALITY = [['low', 'Low'], ['normal', 'Normal'], ['high', 'High']];
+const CROSSFADE = [['0', 'Off'], ['2', '2 seconds'], ['4', '4 seconds'], ['6', '6 seconds'], ['8', '8 seconds'], ['10', '10 seconds'], ['12', '12 seconds']];
 const VIDEO_QUALITY = [['auto', 'Auto'], ['360', '360p'], ['480', '480p'], ['720', '720p'], ['1080', '1080p']];
 function displayName(type, code) {
   try { return new Intl.DisplayNames([navigator.language || 'en', 'en'], { type }).of(code.replace('_', '-')) || code; } catch { return code; }
@@ -2286,6 +2364,7 @@ function renderSettings(d) {
     ${setRow('Audio quality', 'Lower quality uses less mobile data', `<select data-set="quality">${options(QUALITY, audioQuality())}</select>`)}
     ${setRow('Video quality', 'For the Video side of the Song / Video switch', `<select data-set="videoQuality">${options(VIDEO_QUALITY, local.get('videoQuality', 'auto'))}</select>`)}
     ${setRow('Autoplay', 'Keep playing similar songs when the queue ends', switchBtn('autoplay', S.autoplay))}
+    ${setRow('Crossfade', 'Fade each song into the next. Not in Video mode or on the server\'s speaker', `<select data-set="crossfade">${options(CROSSFADE, String(crossfadeSecs()))}</select>`)}
     ${google}
     ${people}
     <h3>Server <span class="muted small">· ${esc(S.info.hostname || '')}, for everyone using it${admin ? '' : '; only an admin can change these'}</span></h3>
@@ -2328,6 +2407,7 @@ function bindSettings(d) {
     const k = el.dataset.set, v = el.value;
     if (k === 'quality') { local.set('quality', v); toast(S.playing && !isServer() ? 'Audio quality changes from the next song' : 'Audio quality saved'); }
     else if (k === 'videoQuality') { local.set('videoQuality', v); syncVideo(); }
+    else if (k === 'crossfade') { local.set('crossfade', +v); if (!+v) endFade(); toast(+v ? `Songs now crossfade over ${v} seconds` : 'Crossfade off'); }
     else if (k === 'inviteCode') { if (await saveServerSetting({ inviteCode: v })) toast(v.trim() ? 'Invite code saved' : 'Invite code removed: anyone can create an account'); }
     else await saveServerSetting({ [k]: v });
   };
