@@ -42,8 +42,18 @@ type reply struct {
 
 type cached struct {
 	data    json.RawMessage
-	expires time.Time
+	expires time.Time // fresh until then; afterwards reused while a new copy is fetched
+	fetched time.Time
 }
+
+const (
+	// A page older than its time to live is still shown straight away
+	// (and fetched again behind the scenes) for this long...
+	staleFor = 24 * time.Hour
+	// ...and when YouTube can't be reached, a copy up to this old beats an error.
+	keepFor  = 7 * 24 * time.Hour
+	maxCache = 1500
+)
 
 type flight struct {
 	done chan struct{}
@@ -64,11 +74,13 @@ type Client struct {
 	next    int
 	lastErr string
 
-	cmu     sync.Mutex
-	cache   map[string]cached
-	flights map[string]*flight
-	streams map[string]*Stream
-	quality string // default audio quality
+	cmu      sync.Mutex
+	cache    map[string]cached
+	flights  map[string]*flight
+	dirty    bool   // the cache changed since it was last saved
+	cacheFor string // region and language of the cached pages
+	streams  map[string]*Stream
+	quality  string // default audio quality
 }
 
 // New prepares a client. python may be empty to search PATH. script may be
@@ -235,7 +247,7 @@ func (c *Client) Call(ctx context.Context, method string, args map[string]string
 		return nil, err
 	}
 
-	timeout := time.NewTimer(90 * time.Second)
+	timeout := time.NewTimer(callTimeout(method))
 	defer timeout.Stop()
 	select {
 	case r, ok := <-ch:
@@ -261,6 +273,55 @@ func (c *Client) Call(ctx context.Context, method string, args map[string]string
 	}
 }
 
+// callTimeout is how long one helper call may take. Pages answer in a few
+// seconds; when one hangs it's quicker to ask again than to keep waiting.
+func callTimeout(method string) time.Duration {
+	switch method {
+	case "playlist", "library_playlists": // importing thousands of songs
+		return 5 * time.Minute
+	case "stream", "ping", "options":
+		return 60 * time.Second
+	}
+	return 30 * time.Second
+}
+
+// transient tells whether an error is worth asking again for: the network
+// or YouTube hiccuped, rather than the song or page being unavailable.
+func transient(err error) bool {
+	if err == nil || IsSignInCheck(err) {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"took too long", "timed out", "timeout", "temporar", "connection", "reset by peer",
+		"remote end closed", "incompleteread", "network is unreachable", "name resolution",
+		"http error 500", "http error 502", "http error 503", "http error 504", "server error",
+		"stopped unexpectedly", "broken pipe", "eof",
+	} {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// callRetrying runs a helper call, asking again up to twice when the
+// failure looks like a passing network or YouTube problem.
+func (c *Client) callRetrying(method string, args map[string]string) (json.RawMessage, error) {
+	var data json.RawMessage
+	var err error
+	for attempt, wait := 0, time.Second; attempt < 3; attempt, wait = attempt+1, wait*3 {
+		if attempt > 0 {
+			time.Sleep(wait)
+		}
+		data, err = c.Call(context.Background(), method, args)
+		if err == nil || !transient(err) {
+			return data, err
+		}
+	}
+	return data, err
+}
+
 func (c *Client) forget(p *proc, id int) {
 	c.mu.Lock()
 	delete(p.pending, id)
@@ -282,11 +343,15 @@ func cacheKey(method string, args map[string]string) string {
 }
 
 // Cached runs a method, reusing a result younger than ttl and sharing one
-// helper call between concurrent identical requests.
+// helper call between concurrent identical requests. A result past its ttl
+// is still answered at once while a new copy is fetched, and when YouTube
+// fails, an older copy is answered rather than an error.
 func (c *Client) Cached(ctx context.Context, method string, args map[string]string, ttl time.Duration) (json.RawMessage, error) {
 	key := cacheKey(method, args)
+	now := time.Now()
 	c.cmu.Lock()
-	if e, ok := c.cache[key]; ok && time.Now().Before(e.expires) {
+	e, have := c.cache[key]
+	if have && now.Before(e.expires) {
 		c.cmu.Unlock()
 		return e.data, nil
 	}
@@ -298,31 +363,59 @@ func (c *Client) Cached(ctx context.Context, method string, args map[string]stri
 	c.cmu.Unlock()
 
 	if !running {
-		go func() {
-			data, err := c.Call(context.Background(), method, args)
-			c.cmu.Lock()
-			f.data, f.err = data, err
-			delete(c.flights, key)
-			if err == nil && ttl > 0 {
-				if len(c.cache) > 400 {
-					now := time.Now()
-					for k, e := range c.cache {
-						if now.After(e.expires) {
-							delete(c.cache, k)
-						}
-					}
-				}
-				c.cache[key] = cached{data, time.Now().Add(ttl)}
-			}
-			c.cmu.Unlock()
-			close(f.done)
-		}()
+		go c.fetch(key, method, args, ttl, f)
+	}
+	if have && ttl > 0 && now.Sub(e.fetched) < staleFor {
+		return e.data, nil // a little old: show it now, the new copy is on its way
 	}
 	select {
 	case <-f.done:
+		if f.err != nil && have && ttl > 0 && now.Sub(e.fetched) < keepFor {
+			return e.data, nil // YouTube failed: an older copy beats an error
+		}
 		return f.data, f.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) fetch(key, method string, args map[string]string, ttl time.Duration, f *flight) {
+	data, err := c.callRetrying(method, args)
+	c.cmu.Lock()
+	f.data, f.err = data, err
+	delete(c.flights, key)
+	if err == nil && ttl > 0 {
+		now := time.Now()
+		if len(c.cache) >= maxCache {
+			c.trimCache(now)
+		}
+		c.cache[key] = cached{data, now.Add(ttl), now}
+		c.dirty = true
+	}
+	c.cmu.Unlock()
+	close(f.done)
+}
+
+// trimCache drops copies too old to use, then the oldest. Call with cmu held.
+func (c *Client) trimCache(now time.Time) {
+	type kt struct {
+		k string
+		t time.Time
+	}
+	var all []kt
+	for k, e := range c.cache {
+		if now.Sub(e.fetched) > keepFor {
+			delete(c.cache, k)
+		} else {
+			all = append(all, kt{k, e.fetched})
+		}
+	}
+	if len(all) < maxCache*9/10 {
+		return
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].t.Before(all[j].t) })
+	for _, x := range all[:len(all)-maxCache*3/4] {
+		delete(c.cache, x.k)
 	}
 }
 
@@ -469,7 +562,11 @@ func (c *Client) Status(ctx context.Context) map[string]any {
 // Restart switches to a fresh helper, which picks up newly installed Python
 // packages and changed settings. New calls go to the new helper at once;
 // the old one finishes the calls it was answering, then exits.
-func (c *Client) Restart() {
+//
+// With keepCache, pages already fetched stay and are shown while new copies
+// are fetched (after a YouTube support update). Without it they're dropped
+// (after a change of region or language).
+func (c *Client) Restart(keepCache bool) {
 	c.mu.Lock()
 	old := c.cur
 	c.cur = nil
@@ -493,7 +590,15 @@ func (c *Client) Restart() {
 		}()
 	}
 	c.cmu.Lock()
-	c.cache = map[string]cached{}
+	if keepCache {
+		for k, e := range c.cache {
+			e.expires = time.Time{} // fetch again, show this meanwhile
+			c.cache[k] = e
+		}
+	} else {
+		c.cache = map[string]cached{}
+	}
+	c.dirty = true
 	c.streams = map[string]*Stream{}
 	c.cmu.Unlock()
 }

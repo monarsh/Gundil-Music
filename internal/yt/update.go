@@ -178,7 +178,7 @@ func (c *Client) Update(ctx context.Context, force bool) (*UpdateResult, error) 
 	}
 	os.RemoveAll(old)
 
-	c.Restart()
+	c.Restart(true)
 	versions := c.Installed(ctx)
 	r := &UpdateResult{Updated: true, Message: "YouTube support updated", Versions: versions, Time: time.Now().Unix()}
 	for _, p := range packages {

@@ -619,3 +619,15 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 .dl-mark svg { width: 16px; height: 16px; }
 .dl-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .banner .btn.small { margin-left: 8px; }
+
+/* ---------- touch gestures ---------- */
+#ptr { position: absolute; left: 50%; top: calc(var(--top-h) - 36px); z-index: 30; width: 36px; height: 36px; border-radius: 50%; background: var(--raised); box-shadow: 0 2px 8px rgba(0, 0, 0, .5); display: grid; place-items: center; opacity: 0; transform: translate(-50%, 0); transition: opacity .2s, transform .2s; pointer-events: none; }
+#ptr svg { width: 20px; height: 20px; color: var(--text2); }
+#ptr.ready svg { color: var(--text); }
+#ptr.spin { opacity: 1 !important; transform: translate(-50%, 54px) !important; }
+#ptr.spin svg { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+@media (max-width: 760px) {
+  #main { overscroll-behavior-y: contain; }
+  .bar-mid, .pp-art { touch-action: pan-y; }
+}

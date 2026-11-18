@@ -107,11 +107,21 @@ function sized(url, px) {
 const img = (url, px, alt = '') => url ? `<img src="${esc(dlThumbs.get(url) || sized(url, px))}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer">` : '';
 
 async function api(path, method = 'GET', body) {
-  const res = await fetch('/api/' + path, {
+  const go = () => fetch('/api/' + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
+  let res;
+  try { res = await go(); } catch (e) {
+    if (method !== 'GET') throw e;
+    res = null; // the connection dropped: ask once more below
+  }
+  if (method === 'GET' && (!res || [502, 503, 504].includes(res.status))) {
+    // A passing hiccup (Wi-Fi, or YouTube slow to answer the server): try once more.
+    await new Promise(r => setTimeout(r, 1200));
+    res = await go();
+  }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.signin) showSignIn();
@@ -3050,8 +3060,153 @@ function staticIcons() {
   set('.ico-share', 'share');
 }
 
+/* =========================================================================
+   touch gestures (phones and the Android app)
+   ========================================================================= */
+let swipedAt = 0; // a swipe isn't also a tap
+document.addEventListener('click', e => { if (Date.now() - swipedAt < 400) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+/* Follows one finger on el. axis(dx, dy, e) is asked once the finger has moved
+   a little: 'x' or 'y' to take the gesture, or nothing to leave it to the page
+   (scrolling). move(dx, dy, axis) follows the finger; end(dx, dy, axis, vx, vy)
+   gets the distance and speed (px/ms) when it lifts. */
+function swipe(el, { axis, move, end }) {
+  let s = null;
+  el.addEventListener('touchstart', e => {
+    s = null;
+    if (e.touches.length !== 1 || e.target.closest('input, select, textarea, .drag-handle, video')) return;
+    const t = e.touches[0];
+    s = { x: t.clientX, y: t.clientY, t: performance.now(), ax: null, dx: 0, dy: 0, target: e.target };
+  }, { passive: true });
+  el.addEventListener('touchmove', e => {
+    if (!s || e.touches.length !== 1) return;
+    const t = e.touches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (!s.ax) {
+      if (Math.hypot(dx, dy) < 10) return;
+      s.ax = axis(dx, dy, s.target) || 'none';
+      if (s.ax !== 'none') { s.x += Math.sign(dx) * (s.ax === 'x' ? 10 : 0); s.y += Math.sign(dy) * (s.ax === 'y' ? 10 : 0); }
+    }
+    if (s.ax === 'none') return;
+    if (e.cancelable) e.preventDefault();
+    s.dx = t.clientX - s.x; s.dy = t.clientY - s.y;
+    if (move) move(s.dx, s.dy, s.ax);
+  }, { passive: false });
+  const finish = cancelled => {
+    if (s && s.ax && s.ax !== 'none') {
+      const dt = Math.max(1, performance.now() - s.t);
+      swipedAt = Date.now();
+      end(cancelled ? 0 : s.dx, cancelled ? 0 : s.dy, s.ax, cancelled ? 0 : s.dx / dt, cancelled ? 0 : s.dy / dt);
+    }
+    s = null;
+  };
+  el.addEventListener('touchend', () => finish(false));
+  el.addEventListener('touchcancel', () => finish(true));
+}
+
+/* Moves el by (x, y) without animation, or back to rest with one. */
+function slide(el, x, y, animate) {
+  el.style.transition = animate ? 'transform .22s ease' : 'none';
+  el.style.transform = x || y ? `translate(${x}px, ${y}px)` : '';
+  if (animate) el.addEventListener('transitionend', () => { el.style.transition = ''; }, { once: true });
+}
+const flung = (d, v, dist) => Math.abs(d) > dist || (Math.abs(v) > 0.45 && Math.abs(d) > 24);
+
+function setUpGestures() {
+  const onPhone = () => mobile() && matchMedia('(pointer: coarse)').matches;
+
+  // Mini player: swipe up opens the player, left / right changes song.
+  const mid = $('.bar-mid');
+  swipe($('#bar'), {
+    axis: (dx, dy) => !onPhone() || !current() ? null : Math.abs(dy) > Math.abs(dx) ? (dy < 0 ? 'y' : null) : 'x',
+    move: (dx, dy, ax) => slide(mid, ax === 'x' ? dx : 0, ax === 'y' ? Math.max(-40, dy / 3) : 0),
+    end: (dx, dy, ax, vx, vy) => {
+      slide(mid, 0, 0, true);
+      if (ax === 'y' && flung(dy, vy, 40) && dy < 0) openPlayer();
+      else if (ax === 'x' && flung(dx, vx, 80)) dx < 0 ? next() : prev();
+    },
+  });
+
+  // Player: swipe down closes it; left / right on the cover changes song.
+  const pp = $('#pp');
+  swipe(pp, {
+    axis: (dx, dy, target) => {
+      if (!onPhone() || target.closest('.pp-side') || document.fullscreenElement || pp.classList.contains('sheet')) return null;
+      if (Math.abs(dy) > Math.abs(dx)) return dy > 0 ? 'y' : null;
+      return target.closest('.pp-art') ? 'x' : null;
+    },
+    move: (dx, dy, ax) => ax === 'y' ? slide(pp, 0, Math.max(0, dy), false) : slide($('#pp-art'), dx, 0, false),
+    end: (dx, dy, ax, vx, vy) => {
+      if (ax === 'y') {
+        if (flung(dy, vy, 120) && dy > 0) {
+          slide(pp, 0, pp.offsetHeight, true);
+          setTimeout(() => { closePlayer(); slide(pp, 0, 0, false); }, 220);
+        } else slide(pp, 0, 0, true);
+      } else {
+        slide($('#pp-art'), 0, 0, true);
+        if (flung(dx, vx, 80)) dx < 0 ? next() : prev();
+      }
+    },
+  });
+
+  // Up next / Lyrics / Related: swipe the tabs up to open the panel, down to close it.
+  // In the open panel, pulling down from the top of the list closes it too.
+  const side = $('#pp-side');
+  swipe(side, {
+    axis: (dx, dy, target) => {
+      if (!onPhone() || Math.abs(dy) < Math.abs(dx) || $('#pp-body').classList.contains('lyrics-fs')) return null;
+      const open = pp.classList.contains('sheet');
+      if (!open) return dy < 0 ? 'y' : null;
+      if (dy < 0) return null;
+      return target.closest('.pp-tabs') || $('#pp-body').scrollTop <= 0 ? 'y' : null;
+    },
+    move: (dx, dy) => slide(side, 0, pp.classList.contains('sheet') ? Math.max(0, dy) : Math.max(-60, dy / 3), false),
+    end: (dx, dy, ax, vx, vy) => {
+      slide(side, 0, 0, true);
+      const open = pp.classList.contains('sheet');
+      if (!open && dy < 0 && flung(dy, vy, 40)) setPPTab(S.ppTab || 'upnext');
+      else if (open && dy > 0 && flung(dy, vy, 80)) pp.classList.remove('sheet');
+    },
+  });
+
+  // Menus that open from the bottom: pull down to close.
+  const menu = $('#menu');
+  swipe(menu, {
+    axis: (dx, dy) => onPhone() && dy > 0 && Math.abs(dy) > Math.abs(dx) && menu.scrollTop <= 0 ? 'y' : null,
+    move: (dx, dy) => slide(menu, 0, Math.max(0, dy), false),
+    end: (dx, dy, ax, vx, vy) => {
+      if (flung(dy, vy, 80)) { hideMenu(); slide(menu, 0, 0, false); } else slide(menu, 0, 0, true);
+    },
+  });
+
+  // Pull down at the top of a page to load it again.
+  const main = $('#main');
+  const ptr = document.createElement('div');
+  ptr.id = 'ptr';
+  ptr.innerHTML = icon('refresh');
+  $('#app').appendChild(ptr);
+  const pull = d => {
+    const p = Math.min(1, d / 90);
+    ptr.style.opacity = p;
+    ptr.style.transform = `translate(-50%, ${Math.min(90, d * 0.6)}px) rotate(${p * 270}deg)`;
+    ptr.classList.toggle('ready', p >= 1);
+  };
+  swipe(main, {
+    axis: (dx, dy) => onPhone() && !S.offline && dy > 0 && Math.abs(dy) > Math.abs(dx) * 1.5 && main.scrollTop <= 0 ? 'y' : null,
+    move: (dx, dy) => { ptr.style.transition = 'none'; pull(Math.max(0, dy)); },
+    end: (dx, dy) => {
+      ptr.style.transition = '';
+      if (dy >= 90) {
+        ptr.classList.add('spin');
+        ytCache.clear();
+        Promise.resolve(route(true)).finally(() => { ptr.classList.remove('spin', 'ready'); pull(0); });
+      } else pull(0);
+    },
+  });
+}
+
 async function init() {
   staticIcons();
+  setUpGestures();
   try {
     S.session = await api('session');
   } catch { /* an older server: no accounts */ }

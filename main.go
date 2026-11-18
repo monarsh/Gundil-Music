@@ -124,6 +124,18 @@ func main() {
 		return
 	}
 	ytc.SetAudioQuality(cfg.Get().AudioQuality)
+	ytc.SetCacheFor(cfg.Get().Region + "|" + cfg.Get().Language)
+	ytc.LoadCache() // pages from the last run show at once while fresh ones load
+	stopSaving := make(chan struct{})
+	savedCache := make(chan struct{})
+	go func() { ytc.KeepCacheSaved(stopSaving); close(savedCache) }()
+	saveCache := func() {
+		close(stopSaving)
+		select {
+		case <-savedCache:
+		case <-time.After(5 * time.Second):
+		}
+	}
 	st := store.New(filepath.Join(*dataDir, "library.json"))
 	if *mpvPath == "" {
 		// The Windows zip and the AppImage may carry mpv next to the program.
@@ -162,7 +174,8 @@ func main() {
 		ytc.SetAudioQuality(now.AudioQuality)
 		if old.Region != now.Region || old.Language != now.Language {
 			applyEnv(now)
-			go ytc.Restart() // results in the new region and language
+			ytc.SetCacheFor(now.Region + "|" + now.Language)
+			go ytc.Restart(false) // results in the new region and language
 		}
 	}
 
@@ -209,6 +222,7 @@ func main() {
 	sw.OnQuit = func() {
 		log.Printf("quitting (asked from the app)")
 		pl.Close()
+		saveCache()
 		ytc.Close()
 		os.Exit(0)
 	}
@@ -246,7 +260,10 @@ func main() {
 		}
 	}()
 	if serving() {
-		go logYouTubeStatus(ytc)
+		go func() {
+			logYouTubeStatus(ytc)
+			srv.Warm() // Home and Explore ready before anyone opens them
+		}()
 	} else {
 		log.Printf("client mode: using the server at %s (change it at http://localhost:%d/_gundil/ or with -mode server)", sw.Get().Server, tcp.Port)
 	}
@@ -265,6 +282,7 @@ func main() {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 		pl.Close()
+		saveCache()
 		ytc.Close()
 		os.Exit(0)
 	}()

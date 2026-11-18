@@ -291,6 +291,34 @@ come from `localhost` or `https://` (browsers only keep a page for offline use
 there). Over plain `http://` on your network, downloads still play while the
 page is open. The Android app always opens offline.
 
+## Touch gestures (phones)
+
+- **Mini player:** swipe up to open the player; swipe left or right for the next
+  or previous song. A tap still opens it.
+- **Player:** swipe down to close it; swipe the cover left or right to change song.
+- **Up next / Lyrics / Related:** swipe the tabs up to open the panel, and down
+  (or pull down from the top of the list) to close it.
+- **Menus** that open from the bottom: pull down to close.
+- **Any page:** pull down at the top to load it again.
+
+## When YouTube is slow or fails
+
+The server keeps the pages it fetched (Home, Explore, albums, artists,
+playlists, searches, lyrics), also on disk across restarts:
+
+- A page fetched before shows at once, even when it's a bit old, while a fresh
+  copy is fetched behind the scenes for next time.
+- When YouTube doesn't answer or a connection drops, the server asks again
+  (up to three times, a few seconds apart), and the app asks the server again
+  once. If YouTube still fails, a copy up to a week old is shown instead of an
+  error.
+- Home and Explore are fetched when the server starts, so they're ready.
+- A page that hangs is given up after 30 seconds and asked again, rather than
+  waiting a minute and a half.
+
+Songs that won't play are a different problem: usually YouTube's sign-in check
+(see above) or an out-of-date yt-dlp (**Update YouTube support** in About).
+
 ## Crossfade
 
 **Settings → Crossfade** fades each song into the next, over 2 to 12 seconds

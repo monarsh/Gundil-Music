@@ -76,6 +76,15 @@ var endpoints = map[string]endpoint{
 	"related":  {[]string{"id"}, time.Hour},
 }
 
+// Warm fetches the pages people usually open first, so they're ready.
+func (s *Server) Warm() {
+	for _, m := range []string{"home", "explore", "moods"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		s.YT.Cached(ctx, m, map[string]string{}, endpoints[m].ttl)
+		cancel()
+	}
+}
+
 var streamClient = &http.Client{Transport: &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,

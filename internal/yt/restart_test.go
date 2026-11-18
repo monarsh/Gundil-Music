@@ -62,7 +62,7 @@ func TestRestartKeepsCallsGoing(t *testing.T) {
 	}()
 	time.Sleep(300 * time.Millisecond)
 	start := time.Now()
-	c.Restart()
+	c.Restart(true)
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("Restart blocked for %v", d)
 	}
