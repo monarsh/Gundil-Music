@@ -19,5 +19,7 @@ cp web/icon-512.png "$app/.DirIcon"
 
 tool=build/appimagetool
 [ -x "$tool" ] || { curl -fsSL https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -o "$tool"; chmod +x "$tool"; }
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$app" "dist/Gundil_Music-$VERSION-x86_64.AppImage"
+# Without VERSION in its environment: appimagetool would otherwise write it into
+# the shortcut (X-AppImage-Version), and menus would show "Gundil Music (v1.0)".
+env -u VERSION ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$app" "dist/Gundil_Music-$VERSION-x86_64.AppImage"
 ls -lh dist/*.AppImage

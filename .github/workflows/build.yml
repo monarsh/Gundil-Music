@@ -69,6 +69,11 @@ jobs:
       - name: Smoke test
         run: |
           app=$(ls dist/*.AppImage)
+          # The start-menu shortcut is plain "Gundil Music", with no version added.
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract gundil-music.desktop > /dev/null)
+          cat "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
+          grep -qx 'Name=Gundil Music' "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
+          ! grep -q 'X-AppImage-Version' "$RUNNER_TEMP/squashfs-root/gundil-music.desktop"
           # The AppImage is read-only; updates must land in the data folder.
           APPIMAGE_EXTRACT_AND_RUN=1 "$app" -update-youtube -data "$RUNNER_TEMP/data"
           test -d "$RUNNER_TEMP/data/pylib"
