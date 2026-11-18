@@ -457,8 +457,46 @@ func (s *Server) ytCall(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// stream proxies a video's audio from YouTube, passing Range through so the
-// browser and mpv can seek.
+// streamChunk is the most asked of YouTube in one request. YouTube refuses
+// (403) a single request for much more of a stream than this, so longer
+// streams (videos above all) are fetched piece by piece, as yt-dlp does.
+const streamChunk = 10 << 20
+
+// parseRange reads a "bytes=a-b" or "bytes=a-" request. end is -1 for "to the end".
+func parseRange(h string) (start, end int64, ok bool) {
+	spec, found := strings.CutPrefix(h, "bytes=")
+	if !found || strings.Contains(spec, ",") {
+		return 0, -1, false
+	}
+	a, b, _ := strings.Cut(spec, "-")
+	if _, err := fmt.Sscan(a, &start); err != nil || start < 0 {
+		return 0, -1, false
+	}
+	end = -1
+	if b != "" {
+		if _, err := fmt.Sscan(b, &end); err != nil || end < start {
+			return 0, -1, false
+		}
+	}
+	return start, end, true
+}
+
+// totalOf reads the full size from a "bytes a-b/total" Content-Range.
+func totalOf(contentRange string) int64 {
+	_, t, ok := strings.Cut(contentRange, "/")
+	var n int64
+	if !ok || t == "*" {
+		return -1
+	}
+	if _, err := fmt.Sscan(t, &n); err != nil {
+		return -1
+	}
+	return n
+}
+
+// stream proxies a video's audio (or picture) from YouTube, passing Range
+// through so the browser and mpv can seek. The bytes asked for are fetched
+// from YouTube in pieces of at most streamChunk.
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !model.ValidID(id) {
@@ -466,74 +504,128 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientRange := r.Header.Get("Range")
+	start, end, ranged := parseRange(clientRange)
+	if !ranged {
+		start, end = 0, -1
+	}
 	f := s.format(r)
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		st, err := s.YT.StreamFormat(yt.WithCookies(r.Context(), s.accountCookies(r)), id, f, attempt > 0)
-		if err != nil {
-			lastErr = err
-			break
-		}
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
-		if err != nil {
-			lastErr = err
-			break
-		}
-		for k, v := range st.Headers {
-			req.Header.Set(k, v)
-		}
-		if clientRange != "" {
-			req.Header.Set("Range", clientRange)
-		} else {
-			req.Header.Set("Range", "bytes=0-")
-		}
-		resp, err := streamClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
-			continue
-		}
-		defer resp.Body.Close()
+	ctx := yt.WithCookies(r.Context(), s.accountCookies(r))
 
-		if f.Kind == "video" && (clientRange == "" || strings.HasPrefix(clientRange, "bytes=0-")) {
-			log.Printf("video %s: format %s, %s, %dp, %s (device plays %s; YouTube answered %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, f.Codecs, resp.Status)
-		}
-		h := w.Header()
-		mime := st.Mime
-		if mime == "" {
-			mime = resp.Header.Get("Content-Type")
-		}
-		h.Set("Content-Type", mime)
-		h.Set("Accept-Ranges", "bytes")
-		h.Set("Cache-Control", "no-store")
-		status := resp.StatusCode
-		if status == http.StatusPartialContent && clientRange == "" {
-			// We asked for the whole file as a range; answer as a plain 200.
-			status = http.StatusOK
-			if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && total != "*" {
-				h.Set("Content-Length", total)
+	// get asks YouTube for bytes from..to of the stream, getting a fresh link
+	// once if YouTube refuses the one it has.
+	var st *yt.Stream
+	get := func(from, to int64) (*http.Response, error) {
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			if st == nil || attempt > 0 {
+				var err error
+				if st, err = s.YT.StreamFormat(ctx, id, f, attempt > 0); err != nil {
+					return nil, err
+				}
 			}
-		} else {
-			if v := resp.Header.Get("Content-Range"); v != "" {
-				h.Set("Content-Range", v)
+			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, st.URL, nil)
+			if err != nil {
+				return nil, err
 			}
-			if v := resp.Header.Get("Content-Length"); v != "" {
-				h.Set("Content-Length", v)
+			for k, v := range st.Headers {
+				req.Header.Set(k, v)
 			}
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", from, to))
+			resp, err := streamClient.Do(req)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
+				resp.Body.Close()
+				lastErr = fmt.Errorf("YouTube refused the stream (%s)", resp.Status)
+				continue
+			}
+			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				resp.Body.Close()
+				return nil, errRangeEnd
+			}
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+				resp.Body.Close()
+				return nil, fmt.Errorf("YouTube answered %s", resp.Status)
+			}
+			return resp, nil
 		}
-		w.WriteHeader(status)
+		return nil, lastErr
+	}
+
+	firstTo := start + streamChunk - 1
+	if end >= 0 && end < firstTo {
+		firstTo = end
+	}
+	resp, err := get(start, firstTo)
+	if err != nil {
+		if r.Context().Err() == nil {
+			if errors.Is(err, errRangeEnd) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			log.Printf("stream %s: %v", id, err)
+			fail(w, 502, err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	if f.Kind == "video" && start == 0 {
+		log.Printf("video %s: format %s, %s, %dp, %s (device plays %s)", id, st.Format, st.VCodec, st.Height, st.Protocol, f.Codecs)
+	}
+
+	h := w.Header()
+	mime := st.Mime
+	if mime == "" {
+		mime = resp.Header.Get("Content-Type")
+	}
+	h.Set("Content-Type", mime)
+	h.Set("Accept-Ranges", "bytes")
+	h.Set("Cache-Control", "no-store")
+
+	total := totalOf(resp.Header.Get("Content-Range"))
+	if resp.StatusCode == http.StatusOK || total < 0 {
+		// YouTube sent the whole thing (or won't say its size): pass it on as is.
+		if v := resp.Header.Get("Content-Length"); v != "" && !ranged {
+			h.Set("Content-Length", v)
+		}
+		w.WriteHeader(http.StatusOK)
 		io.Copy(w, resp.Body)
 		return
 	}
-	if r.Context().Err() == nil {
-		log.Printf("stream %s: %v", id, lastErr)
-		fail(w, 502, lastErr)
+	if end < 0 || end >= total {
+		end = total - 1
+	}
+	if ranged {
+		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
+		h.Set("Content-Length", fmt.Sprint(end-start+1))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		h.Set("Content-Length", fmt.Sprint(total))
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := io.Copy(w, resp.Body)
+	resp.Body.Close()
+	for pos := start + n; err == nil && pos <= end; {
+		to := min(pos+streamChunk-1, end)
+		next, gerr := get(pos, to)
+		if gerr != nil {
+			if r.Context().Err() == nil {
+				log.Printf("stream %s at byte %d: %v", id, pos, gerr)
+			}
+			return // the player asks again from where it stopped
+		}
+		n, err = io.Copy(w, next.Body)
+		next.Body.Close()
+		if n == 0 {
+			return
+		}
+		pos += n
 	}
 }
+
+var errRangeEnd = errors.New("past the end of the stream")
 
 // format reads which stream a request wants: ?q=low|normal|high for audio,
 // or ?kind=video&h=720 for a video picture. Audio defaults to the server's quality.
