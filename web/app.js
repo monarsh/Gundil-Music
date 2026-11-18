@@ -872,18 +872,37 @@ async function setMode(mode) {
   }
 }
 
-function setFullscreen(on) {
+const inAndroidApp = () => !!(window.GundilAndroid && window.GundilAndroid.fullscreen);
+let fsByRotation = false; // full screen because the phone was turned sideways
+
+/* auto: entered by turning the phone sideways, so turning it back leaves. */
+function setFullscreen(on, auto = false) {
   const art = $('#pp-art');
   if (on === art.classList.contains('fs')) return;
   art.classList.toggle('fs', on);
+  fsByRotation = on && auto;
   $('#pp-fs').innerHTML = icon(on ? 'fullscreenExit' : 'fullscreen');
   $('#pp-fs').setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
+  if (inAndroidApp()) {
+    // The app hides the status and navigation bars itself, and turns the
+    // screen sideways for a wide video when full screen was asked for.
+    const v = $('#pp-video');
+    try { window.GundilAndroid.fullscreen(on, on && !auto && !(v.videoHeight > v.videoWidth)); } catch { /* older app */ }
+    return;
+  }
   try {
     if (on && art.requestFullscreen && document.fullscreenEnabled) art.requestFullscreen().catch(() => {});
     else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   } catch { /* not supported: the page-filling view is enough */ }
 }
-document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) setFullscreen(false); });
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && !inAndroidApp()) setFullscreen(false); });
+
+/* The Android app reports turning the phone: sideways shows a playing video full screen. */
+window.gundilOrientation = landscape => {
+  const art = $('#pp-art');
+  if (landscape && S.ppOpen && art.classList.contains('show-video') && !art.classList.contains('fs')) setFullscreen(true, true);
+  else if (!landscape && fsByRotation) setFullscreen(false);
+};
 
 /* =========================================================================
    sleep timer
@@ -3170,7 +3189,7 @@ function setUpGestures() {
   const pp = $('#pp');
   swipe(pp, {
     axis: (dx, dy, target) => {
-      if (!onPhone() || target.closest('.pp-side') || document.fullscreenElement || pp.classList.contains('sheet')) return null;
+      if (!onPhone() || target.closest('.pp-side') || document.fullscreenElement || $('#pp-art').classList.contains('fs') || pp.classList.contains('sheet')) return null;
       if (Math.abs(dy) > Math.abs(dx)) return dy > 0 ? 'y' : null;
       return target.closest('.pp-art') ? 'x' : null;
     },

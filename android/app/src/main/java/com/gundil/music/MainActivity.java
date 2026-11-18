@@ -8,7 +8,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.MutableContextWrapper;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.ConnectivityManager;
 import android.net.LinkAddress;
@@ -22,7 +24,10 @@ import android.os.Looper;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
@@ -68,6 +73,9 @@ public class MainActivity extends Activity {
     private static boolean authAsked;
 
     private WebView web;
+    private View root;
+    /** The page shows a video full screen: no system bars, nothing padded. */
+    private boolean fullscreen;
     private SharedPreferences prefs;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -102,18 +110,21 @@ public class MainActivity extends Activity {
             setUp(web, getApplicationContext());
         }
         web.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.parseColor("#030303"));
-        root.addView(web);
-        keepClearOfSystemBars(root);
-        setContentView(root);
+        FrameLayout box = new FrameLayout(this);
+        box.setBackgroundColor(Color.parseColor("#030303"));
+        box.addView(web);
+        root = box;
+        keepClearOfSystemBars();
+        setContentView(box);
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
 
         if (reuse) {
-            // Already showing the app.
+            // Already showing the app. A new screen starts with its bars shown,
+            // so leave a full-screen video the page may still be showing.
+            js("window.setFullscreen && setFullscreen(false)");
         } else if (state != null) {
             web.restoreState(state);
         } else {
@@ -128,8 +139,12 @@ public class MainActivity extends Activity {
      * bar and the camera cutout. Keep the page clear of them (and of the
      * keyboard, which edge-to-edge apps must also make room for themselves).
      */
-    private static void keepClearOfSystemBars(View root) {
+    private void keepClearOfSystemBars() {
         root.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (fullscreen) {
+                v.setPadding(0, 0, 0, 0); // a full-screen video uses every pixel
+                return Build.VERSION.SDK_INT >= 30 ? WindowInsets.CONSUMED : insets.consumeSystemWindowInsets();
+            }
             if (Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
@@ -141,6 +156,49 @@ public class MainActivity extends Activity {
             return insets.consumeSystemWindowInsets();
         });
         root.requestApplyInsets();
+    }
+
+    /**
+     * Shows a video full screen, or stops: hides the status and navigation
+     * bars (a swipe from the edge shows them for a moment), keeps the screen
+     * on, and for a wide video asked for with the full-screen button, turns
+     * the screen sideways.
+     */
+    void setFullscreen(boolean on, boolean landscape) {
+        fullscreen = on;
+        Window w = getWindow();
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = w.getInsetsController();
+            if (c != null) {
+                if (on) {
+                    c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                    c.hide(WindowInsets.Type.systemBars());
+                } else {
+                    c.show(WindowInsets.Type.systemBars());
+                }
+            }
+        } else {
+            w.getDecorView().setSystemUiVisibility(on
+                    ? View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    : 0);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.layoutInDisplayCutoutMode = on ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            w.setAttributes(lp);
+        }
+        if (on) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        setRequestedOrientation(on && landscape ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        if (root != null) root.requestApplyInsets();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        // Turning the phone sideways shows a playing video full screen (the page decides).
+        js("window.gundilOrientation && window.gundilOrientation(" + (c.orientation == Configuration.ORIENTATION_LANDSCAPE) + ")");
     }
 
     @Override
@@ -454,6 +512,15 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void changeServer() {
             WebHolder.ui.post(() -> showSetup(null));
+        }
+
+        /** The page shows a video full screen, or stops (see MainActivity.setFullscreen). */
+        @JavascriptInterface
+        public void fullscreen(boolean on, boolean landscape) {
+            WebHolder.ui.post(() -> {
+                MainActivity a = instance;
+                if (a != null) a.setFullscreen(on, landscape);
+            });
         }
 
         @JavascriptInterface
