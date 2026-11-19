@@ -20,7 +20,7 @@ What you get, laid out like YouTube Music:
 - **Import playlists** from YouTube Music or YouTube by link, from a CSV, TXT or M3U file (Spotify and Google Takeout exports work), or your private ones and Liked Music from your linked account
 - **Accounts**: optional sign-in, so each person gets their own library, playlists and history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
-- **Background play**: keeps playing when the app is minimised, swiped away from Recents or the screen is off, for free
+- **Background play**: keeps playing when the app is minimised, swiped away from Recents or the screen is off, for free; plays on after another app (a video, a call) has used the sound
 - **Downloads**: keep songs, albums and playlists on your phone or computer and play them with no connection
 - **Crossfade** between songs (2–12 seconds, per device)
 - **Server or client**: every Windows, Linux desktop, AppImage and Pi build can be the server or connect to another Gundil Music server

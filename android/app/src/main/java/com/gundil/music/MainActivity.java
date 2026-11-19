@@ -126,12 +126,52 @@ public class MainActivity extends Activity {
             // Already showing the app. A new screen starts with its bars shown,
             // so leave a full-screen video the page may still be showing.
             js("window.setFullscreen && setFullscreen(false)");
-        } else if (state != null) {
+        } else if (state != null && !resumeOnLoad) {
             web.restoreState(state);
         } else {
             String server = prefs.getString("server", "");
             if (server.isEmpty()) showSetup(null);
-            else web.loadUrl(server + "/");
+            else web.loadUrl(pageUrl(server));
+        }
+    }
+
+    /** Set when the page must carry on playing once it has loaded again. */
+    static boolean resumeOnLoad;
+
+    /** The server's page, told to play on when it was playing before it was closed. */
+    static String pageUrl(String server) {
+        boolean resume = resumeOnLoad;
+        resumeOnLoad = false;
+        return server + (resume ? "/?resume=1" : "/");
+    }
+
+    /** Loads the page without a screen, so music can carry on with the phone locked. */
+    static void startHeadless(Context app) {
+        String server = prefs(app).getString("server", "");
+        if (server.isEmpty() || WebHolder.web != null) return;
+        WebHolder.context = new MutableContextWrapper(app.getApplicationContext());
+        WebView w = new KeepPlayingWebView(WebHolder.context);
+        WebHolder.web = w;
+        setUp(w, app.getApplicationContext());
+        w.loadUrl(pageUrl(server));
+    }
+
+    /**
+     * Once, when music first plays: ask Android to let Gundil Music run in
+     * the background without battery limits. With them, some phones close
+     * the app after the screen has been off a long time, music or not.
+     */
+    void askToRunInBackground() {
+        if (Build.VERSION.SDK_INT < 23 || prefs.getBoolean("askedBattery", false)) return;
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) return; // automated tests
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+        prefs.edit().putBoolean("askedBattery", true).apply();
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (RuntimeException ignored) {
+            // Not offered on this phone.
         }
     }
 
@@ -345,10 +385,19 @@ public class MainActivity extends Activity {
         public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
             // The page's renderer crashed or was killed: start over instead of letting Android close the app.
             android.util.Log.w("GundilMusic", "WebView renderer gone (crash=" + detail.didCrash() + "), reloading");
+            boolean wasPlaying = PlaybackService.playingHere();
             WebHolder.destroy();
+            resumeOnLoad = wasPlaying;
             MainActivity a = instance;
-            if (a != null) a.recreate();
-            else app.stopService(new Intent(app, PlaybackService.class));
+            if (a != null) {
+                a.recreate();
+            } else if (wasPlaying) {
+                // No screen open (the phone was locked, say): start the page
+                // again in the background and carry on playing.
+                startHeadless(app);
+            } else {
+                app.stopService(new Intent(app, PlaybackService.class));
+            }
             return true;
         }
 
@@ -580,6 +629,10 @@ public class MainActivity extends Activity {
                 i.putExtra("artist", o.optString("artist"));
                 i.putExtra("thumb", o.optString("thumb"));
                 i.putExtra("playing", o.optBoolean("playing"));
+                i.putExtra("interrupted", o.optBoolean("interrupted"));
+                if (o.optBoolean("playing") && o.optBoolean("local", true)) {
+                    WebHolder.ui.post(() -> { MainActivity a = instance; if (a != null) a.askToRunInBackground(); });
+                }
                 i.putExtra("local", o.optBoolean("local", true));
                 i.putExtra("hasTrack", o.optBoolean("hasTrack"));
                 i.putExtra("where", o.optString("where"));

@@ -18,8 +18,11 @@ import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -44,6 +47,47 @@ public class PlaybackService extends Service {
     private String title = "", artist = "", thumb = "", where = "", artFor = "";
     private boolean playing, local = true;
     private Bitmap art;
+
+    /**
+     * Another app took over the sound (or a call came) and the music paused
+     * by itself. Gundil Music stays ready, and plays on once nothing else is
+     * playing, as long as that's within RESUME_FOR.
+     */
+    private boolean interrupted;
+    private long interruptedAt;
+    private int quietChecks;
+    private static final long RESUME_FOR = 30 * 60 * 1000L;
+    /** Paused by you: stay in the foreground (not closed by Android) this long. */
+    private static final long KEEP_PAUSED = 15 * 60 * 1000L;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private final Runnable watchForQuiet = new Runnable() {
+        @Override
+        public void run() {
+            if (!interrupted || playing || !local) return;
+            if (SystemClock.elapsedRealtime() - interruptedAt > RESUME_FOR) {
+                interrupted = false; // too long ago: leave it paused
+                refresh();
+                return;
+            }
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            boolean busy = am.isMusicActive() || am.getMode() != AudioManager.MODE_NORMAL;
+            quietChecks = busy ? 0 : quietChecks + 1;
+            if (quietChecks >= 2) {
+                // The other app has stopped (and no call is on): play on.
+                quietChecks = 0;
+                control("play");
+                handler.postDelayed(this, 5000);
+            } else {
+                handler.postDelayed(this, 2000);
+            }
+        }
+    };
+
+    /** Paused for a while: let the notification go, and Android close the app if it needs to. */
+    private final Runnable letGo = () -> {
+        if (!playing && !interrupted && Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_DETACH);
+    };
 
     /** Headphones unplugged or a Bluetooth speaker disconnected: pause, don't blast the phone speaker. */
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
@@ -91,10 +135,10 @@ public class PlaybackService extends Service {
         MainActivity.control(cmd); // works with or without the app's screen open
     }
 
-    /** Whether this phone itself is playing music right now. */
+    /** Whether this phone itself is playing music right now (or will again, once another app stops). */
     static boolean playingHere() {
         PlaybackService s = instance;
-        return s != null && s.playing && s.local;
+        return s != null && s.local && (s.playing || s.interrupted);
     }
 
     /** The app was swiped away from Recents. Keep going only while music plays here. */
@@ -127,6 +171,14 @@ public class PlaybackService extends Service {
             String t = intent.getStringExtra("thumb");
             playing = intent.getBooleanExtra("playing", false);
             local = intent.getBooleanExtra("local", true);
+            boolean wasInterrupted = interrupted;
+            interrupted = !playing && local && intent.getBooleanExtra("interrupted", false);
+            if (interrupted && !wasInterrupted) {
+                interruptedAt = SystemClock.elapsedRealtime();
+                quietChecks = 0;
+                handler.removeCallbacks(watchForQuiet);
+                handler.postDelayed(watchForQuiet, 2000);
+            }
             where = intent.getStringExtra("where");
             if (t != null && !t.equals(artFor)) {
                 artFor = t;
@@ -139,8 +191,9 @@ public class PlaybackService extends Service {
     }
 
     private void refresh() {
-        // Hold locks only while this phone itself is streaming audio.
-        if (playing && local) {
+        // Hold locks only while this phone itself is streaming audio (or waits to play on).
+        boolean active = local && (playing || interrupted);
+        if (active) {
             if (!wake.isHeld()) wake.acquire(6 * 60 * 60 * 1000L);
             if (wifi != null && !wifi.isHeld()) wifi.acquire();
         } else {
@@ -166,7 +219,7 @@ public class PlaybackService extends Service {
                 .setContentText(artist)
                 .setSubText(local ? null : where)
                 .setLargeIcon(art)
-                .setOngoing(playing)
+                .setOngoing(playing || interrupted)
                 .setShowWhen(false)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT))
@@ -182,9 +235,12 @@ public class PlaybackService extends Service {
             // Android may refuse a foreground start from the background; still show the controls.
             getSystemService(NotificationManager.class).notify(ID, n);
         }
-        if (!playing && Build.VERSION.SDK_INT >= 24) {
-            // Paused: the notification may be swiped away, and Android may stop us.
-            stopForeground(STOP_FOREGROUND_DETACH);
+        handler.removeCallbacks(letGo);
+        if (!playing && !interrupted) {
+            // Paused: after a while the notification may be swiped away, and
+            // Android may close the app. Straight away, Android closed it
+            // within minutes with the screen off.
+            handler.postDelayed(letGo, local ? KEEP_PAUSED : 0);
         }
     }
 
@@ -219,6 +275,7 @@ public class PlaybackService extends Service {
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        handler.removeCallbacksAndMessages(null);
         try { unregisterReceiver(noisy); } catch (RuntimeException ignored) { }
         if (wake.isHeld()) wake.release();
         if (wifi != null && wifi.isHeld()) wifi.release();

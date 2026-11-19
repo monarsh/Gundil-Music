@@ -199,6 +199,14 @@ for (const d of decks) d.preload = 'auto';
 function onAudio(type, fn) {
   for (const d of decks) d.addEventListener(type, e => { if (d === audio) fn(e); });
 }
+/* Pauses Gundil Music makes itself are noted, so a pause from anything else
+   (another app taking over the sound, a phone call) shows as an
+   interruption, which the Android app resumes after. */
+let ownPauseAt = 0;
+{
+  const pause = HTMLMediaElement.prototype.pause;
+  HTMLMediaElement.prototype.pause = function () { ownPauseAt = Date.now(); return pause.call(this); };
+}
 const isServer = () => S.output === 'server';
 const audioQuality = () => local.get('quality', 'normal');
 const streamSrc = id => `/api/stream/${id}?q=${audioQuality()}`;
@@ -345,6 +353,7 @@ function loadLocal(play, at = 0, ready = false) {
   fadeKeep = false;
   const id = t.videoId;
   const start = src => {
+    ownPauseAt = Date.now(); // a new song stops the old one: not an interruption
     if (audio.getAttribute('src') !== src) audio.src = src;
     if (at > 0) audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
     if (play) audio.play().catch(e => { if (e.name === 'NotAllowedError') { S.paused = true; S.loading = false; renderPlayer(); } });
@@ -476,7 +485,7 @@ function moveInQueue(from, to) {
 function toggle() {
   if (!S.queue.length) return;
   if (isServer()) return srv('toggle');
-  if (!audio.src) return loadLocal(true);
+  if (!audio.src) return loadLocal(true, S.position || 0);
   endFade();
   if (audio.paused) audio.play().catch(() => {}); else audio.pause();
 }
@@ -612,15 +621,31 @@ async function setOutput(out) {
 onAudio('timeupdate', () => {
   if (isServer()) return;
   S.position = audio.currentTime;
+  savePosition(false);
   maybeCrossfade();
   renderProgress();
   if (videoShown) fixDrift(false);
   if (S.sleep.at && Date.now() >= S.sleep.at) sleepNow(); // timers can be slowed in the background
 });
 onAudio('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
-onAudio('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
+onAudio('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; S.interrupted = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
 onAudio('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
-onAudio('pause', () => { if (!isServer()) { S.paused = true; renderPlayer(); } });
+onAudio('pause', () => {
+  if (isServer()) return;
+  S.paused = true;
+  S.interrupted = !audio.ended && Date.now() - ownPauseAt > 1000;
+  savePosition(true);
+  renderPlayer();
+});
+/* Where the song is, so opening the app again (or the Android app starting
+   over after Android closed the page) carries on from there. */
+let positionSavedAt = 0;
+function savePosition(now) {
+  const t = current();
+  if (isServer() || !t || (!now && Date.now() - positionSavedAt < 5000)) return;
+  positionSavedAt = Date.now();
+  local.set('position', { videoId: t.videoId, at: Math.floor(audio.currentTime || 0) });
+}
 onAudio('loadedmetadata', () => {
   if (isServer() || !isFinite(audio.duration)) return;
   S.duration = audio.duration;
@@ -1234,7 +1259,7 @@ function reportToAndroid() {
   const t = current();
   const msg = JSON.stringify(t ? {
     hasTrack: true, title: t.title, artist: names(t), thumb: sized(t.thumb, 512),
-    playing: !!(S.playing && !S.paused), local: !isServer(), where: isServer() ? `Playing on ${S.info.hostname || 'server'}` : '',
+    playing: !!(S.playing && !S.paused), interrupted: !!(S.interrupted && S.paused && !isServer()), local: !isServer(), where: isServer() ? `Playing on ${S.info.hostname || 'server'}` : '',
   } : { hasTrack: false });
   if (msg === lastReport) return;
   lastReport = msg;
@@ -1242,6 +1267,7 @@ function reportToAndroid() {
 }
 window.gundilControl = cmd => {
   const playingNow = S.playing && !S.paused;
+  if (cmd === 'pause' && !playingNow && S.interrupted) { S.interrupted = false; renderPlayer(); return; } // stay paused
   if (cmd === 'toggle' || (cmd === 'play' && !playingNow) || (cmd === 'pause' && playingNow)) toggle();
   else if (cmd === 'next') next();
   else if (cmd === 'prev') prev();
@@ -3657,6 +3683,8 @@ async function init() {
       S.source = saved.source || '';
       S.playing = false;
       S.paused = true;
+      const pos = local.get('position', null);
+      if (pos && current() && pos.videoId === current().videoId && pos.at > 0) S.position = pos.at;
     }
   }
   if (!location.hash) history.replaceState(null, '', '#/');
@@ -3666,5 +3694,11 @@ async function init() {
   route();
   connectEvents();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // The Android app started the page over while music played (Android had
+  // closed it): carry on playing where it was.
+  if (new URLSearchParams(location.search).has('resume')) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    if (!isServer() && current() && !(S.playing && !S.paused)) toggle();
+  }
 }
 init();
