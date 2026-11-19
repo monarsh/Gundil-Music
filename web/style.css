@@ -647,20 +647,22 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 /* ---------- full-screen video controls (as in YouTube Music) ---------- */
 .fs-ui, .fs-skip { display: none; }
 .pp-art.fs .pp-fs { display: none; }
-.pp-art.fs .fs-ui { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; position: absolute; inset: 0; z-index: 2; color: #fff; background: rgba(0, 0, 0, .55); opacity: 0; transition: opacity .2s; padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); -webkit-tap-highlight-color: transparent; }
+.pp-art.fs .fs-ui { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); position: absolute; inset: 0; z-index: 2; color: #fff; background: rgba(0, 0, 0, .55); opacity: 0; transition: opacity .2s; padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); -webkit-tap-highlight-color: transparent; }
 .pp-art.fs.ui .fs-ui { opacity: 1; }
 .pp-art.fs:not(.ui) .fs-ui > * { pointer-events: none; }
 .pp-art.fs:not(.ui) { cursor: none; }
 .fs-ui .icon-btn { color: #fff; }
-.fs-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.fs-titles { min-width: 0; grid-column: 2; }
+/* The Song/Video switch sits in the middle of the screen, as in YouTube
+   Music, whatever is beside it; the title stops short of it. */
+.fs-top { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.fs-titles { min-width: 0; grid-column: 2; max-width: calc(50vw - 136px); }
 .fs-title { font-size: 18px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fs-sub { font-size: 14px; color: rgba(255, 255, 255, .8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-.fs-mode { grid-column: 3; display: inline-flex; background: rgba(255, 255, 255, .15); border-radius: 22px; padding: 3px; }
+.fs-mode { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; background: rgba(255, 255, 255, .15); border-radius: 22px; padding: 3px; }
 .fs-mode button { width: 52px; height: 36px; display: grid; place-items: center; border-radius: 18px; color: rgba(255, 255, 255, .7); }
 .fs-mode button.on { background: rgba(255, 255, 255, .25); color: #fff; }
 .fs-mode button svg { width: 22px; height: 22px; }
-.fs-right { grid-column: 5; display: flex; gap: 4px; }
+.fs-right { grid-column: 3; display: flex; gap: 4px; }
 .fs-mid { display: flex; align-items: center; justify-content: center; gap: clamp(16px, 6vw, 56px); }
 .fs-mid .icon-btn { width: 52px; height: 52px; }
 .fs-mid .icon-btn svg { width: 32px; height: 32px; }
