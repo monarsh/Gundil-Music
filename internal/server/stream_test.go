@@ -345,3 +345,28 @@ for line in sys.stdin:
 		t.Errorf("next stream: status %d, asked as %q, want straight signed in", w.Code, asked)
 	}
 }
+
+// The order players are asked in: visionos first, the signed-out players,
+// then signed in (yt-dlp's choice, then web_embedded); a way that worked is
+// asked first next time, signed in included.
+func TestPlayerTriesOrder(t *testing.T) {
+	s := &Server{}
+	names := func(tries []playerTry) string {
+		var n []string
+		for _, t := range tries {
+			n = append(n, orDefault(t.name()))
+		}
+		return strings.Join(n, " | ")
+	}
+	want := "visionos | visionos | (yt-dlp's choice) | tv_samsung | web_embedded | tv | tv_downgraded | (yt-dlp's choice), signed in with the linked account | web_embedded, signed in with the linked account"
+	if got := names(s.playerTries("audio", true)); got != want {
+		t.Errorf("first time:\n got %s\nwant %s", got, want)
+	}
+	s.notePlayer("audio", "+account:web_embedded", true)
+	if got := s.playerTries("audio", true); !got[0].account || got[0].clients != "web_embedded" || !got[1].refresh {
+		t.Errorf("after web_embedded signed in worked: %s", names(got))
+	}
+	if got := s.playerTries("audio", false); got[0].account {
+		t.Errorf("no account linked any more, yet asked signed in first: %s", names(got))
+	}
+}

@@ -803,8 +803,13 @@ const firstPlayer = "visionos"
 // mweb and web need one).
 var otherPlayers = []string{"", "tv_samsung", "web_embedded", "tv", "tv_downgraded"}
 
-// signedInPlayer is what goodPlayer holds once streams play only signed in.
-const signedInPlayer = "+account"
+// Players to ask signed in with a linked account, last of all: yt-dlp's
+// choice (which, signed in, YouTube still served where every signed-out
+// player but visionos was refused), then web_embedded.
+var accountPlayers = []string{"", "web_embedded"}
+
+// signedIn starts the name goodPlayer holds for a player asked signed in.
+const signedIn = "+account:"
 
 type playerTry struct {
 	clients string // "" = yt-dlp's choice
@@ -820,22 +825,25 @@ func (s *Server) playerTries(kind string, haveAccount bool) []playerTry {
 	s.mu.Lock()
 	good, ok := s.goodPlayer[kind]
 	s.mu.Unlock()
-	if !ok || good == signedInPlayer && !haveAccount {
-		good = firstPlayer
+	g := playerTry{clients: firstPlayer}
+	if ok {
+		g = tryNamed(good)
 	}
-	var tries []playerTry
-	if good == signedInPlayer {
-		tries = []playerTry{{"web_embedded", false, true}, {"web_embedded", true, true}}
-	} else {
-		tries = []playerTry{{good, false, false}, {good, true, false}}
+	if g.account && !haveAccount {
+		g = playerTry{clients: firstPlayer}
 	}
+	tries := []playerTry{g, {g.clients, true, g.account}}
 	for _, p := range append([]string{firstPlayer}, otherPlayers...) {
-		if p != good {
-			tries = append(tries, playerTry{p, false, false})
+		if t := (playerTry{p, false, false}); t.name() != g.name() {
+			tries = append(tries, t)
 		}
 	}
-	if haveAccount && good != signedInPlayer {
-		tries = append(tries, playerTry{"web_embedded", false, true})
+	if haveAccount {
+		for _, p := range accountPlayers {
+			if t := (playerTry{p, false, true}); t.name() != g.name() {
+				tries = append(tries, t)
+			}
+		}
 	}
 	return tries
 }
@@ -852,8 +860,8 @@ func (s *Server) notePlayer(kind, player string, ok bool) {
 	switch {
 	case ok && (!have || player != old):
 		s.goodPlayer[kind] = player
-		if player == signedInPlayer {
-			log.Printf("%s streams now play signed in with the linked YouTube account", kind)
+		if strings.HasPrefix(player, signedIn) {
+			log.Printf("%s streams now play signed in with the linked YouTube account (YouTube player %s)", kind, orDefault(strings.TrimPrefix(player, signedIn)))
 		} else if have || player != firstPlayer {
 			log.Printf("%s streams now play as YouTube player %s", kind, orDefault(player))
 		}
@@ -865,9 +873,17 @@ func (s *Server) notePlayer(kind, player string, ok bool) {
 // name is how notePlayer knows a way of looking streams up.
 func (t playerTry) name() string {
 	if t.account {
-		return signedInPlayer
+		return signedIn + t.clients
 	}
 	return t.clients
+}
+
+// tryNamed is the way of looking streams up a name stands for.
+func tryNamed(name string) playerTry {
+	if c, ok := strings.CutPrefix(name, signedIn); ok {
+		return playerTry{clients: c, account: true}
+	}
+	return playerTry{clients: name}
 }
 
 func orUnknown(s string) string {
@@ -881,8 +897,9 @@ func orDefault(clients string) string {
 	switch clients {
 	case "":
 		return "(yt-dlp's choice)"
-	case signedInPlayer:
-		return "web_embedded, signed in with the linked account"
+	}
+	if c, ok := strings.CutPrefix(clients, signedIn); ok {
+		return orDefault(c) + ", signed in with the linked account"
 	}
 	return clients
 }
