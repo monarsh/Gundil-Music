@@ -39,13 +39,19 @@ public class PlaybackService extends Service {
     private static final String CHANNEL = "playback";
     private static final int ID = 1;
 
-    static PlaybackService instance;
+    static volatile PlaybackService instance;
 
     private MediaSession session;
     private PowerManager.WakeLock wake;
     private WifiManager.WifiLock wifi;
     private String title = "", artist = "", thumb = "", where = "", artFor = "";
     private boolean playing, local = true;
+    /** Where the song is (ms) when the page last said, and when; how long it is. */
+    private long position, positionAt, duration;
+    /** What the notification and lock screen show now, and whether Android let us stay in the foreground. */
+    private volatile String shown = "";
+    private volatile boolean shownPlaying, foreground;
+    private volatile String lastError = "";
     private Bitmap art;
 
     /**
@@ -113,6 +119,7 @@ public class PlaybackService extends Service {
             @Override public void onSkipToNext() { control("next"); }
             @Override public void onSkipToPrevious() { control("prev"); }
             @Override public void onStop() { control("pause"); }
+            @Override public void onSeekTo(long ms) { control("seek:" + (ms / 1000.0)); }
         });
         session.setActive(true);
 
@@ -180,6 +187,9 @@ public class PlaybackService extends Service {
                 handler.postDelayed(watchForQuiet, 2000);
             }
             where = intent.getStringExtra("where");
+            position = intent.getLongExtra("position", 0);
+            positionAt = SystemClock.elapsedRealtime();
+            duration = intent.getLongExtra("duration", 0);
             if (t != null && !t.equals(artFor)) {
                 artFor = t;
                 art = null;
@@ -216,16 +226,27 @@ public class PlaybackService extends Service {
             if (wifi != null && wifi.isHeld()) wifi.release();
         }
 
-        MediaMetadata.Builder md = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist);
-        if (art != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art);
-        session.setMetadata(md.build());
-        session.setPlaybackState(new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
-                        | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
-                .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
-                .build());
+        try {
+            MediaMetadata.Builder md = new MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist);
+            if (duration > 0) md.putLong(MediaMetadata.METADATA_KEY_DURATION, duration);
+            if (art != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art);
+            session.setActive(true);
+            session.setMetadata(md.build());
+            // The position lets the notification and lock screen show the
+            // song's progress bar (and drag it), as in YouTube Music.
+            session.setPlaybackState(new PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+                            | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
+                    .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
+                            duration > 0 ? position : PlaybackState.PLAYBACK_POSITION_UNKNOWN, playing ? 1f : 0f, positionAt)
+                    .build());
+            shown = title == null ? "" : title;
+            shownPlaying = playing;
+        } catch (RuntimeException e) {
+            lastError = "session: " + e;
+        }
 
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
         Intent open = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -246,9 +267,16 @@ public class PlaybackService extends Service {
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             else startForeground(ID, n);
+            foreground = true;
         } catch (RuntimeException e) {
             // Android may refuse a foreground start from the background; still show the controls.
-            getSystemService(NotificationManager.class).notify(ID, n);
+            foreground = false;
+            lastError = "foreground: " + e;
+            try {
+                getSystemService(NotificationManager.class).notify(ID, n);
+            } catch (RuntimeException e2) {
+                lastError = "notify: " + e2;
+            }
         }
         handler.removeCallbacks(letGo);
         if (!playing && !interrupted) {
@@ -296,6 +324,22 @@ public class PlaybackService extends Service {
         if (wifi != null && wifi.isHeld()) wifi.release();
         session.release();
         super.onDestroy();
+    }
+
+    /** What the notification shows, for the page to check against what plays (see Bridge.playbackInfo). */
+    static String describe() {
+        PlaybackService s = instance;
+        org.json.JSONObject o = new org.json.JSONObject();
+        try {
+            o.put("running", s != null);
+            if (s != null) {
+                o.put("title", s.shown);
+                o.put("playing", s.shownPlaying);
+                o.put("foreground", s.foreground);
+                o.put("error", s.lastError);
+            }
+        } catch (org.json.JSONException ignored) { }
+        return o.toString();
     }
 
     @Override

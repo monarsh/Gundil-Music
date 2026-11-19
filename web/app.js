@@ -627,7 +627,7 @@ onAudio('timeupdate', () => {
   if (videoShown) fixDrift(false);
   if (S.sleep.at && Date.now() >= S.sleep.at) sleepNow(); // timers can be slowed in the background
 });
-onAudio('seeked', () => { if (video.getAttribute('src')) fixDrift(true); });
+onAudio('seeked', () => { if (video.getAttribute('src')) fixDrift(true); reportToAndroid(true); });
 onAudio('playing', () => { if (!isServer()) { S.loading = false; S.paused = false; S.interrupted = false; errorsInRow = 0; S.stuck = ''; renderPlayer(); } });
 onAudio('waiting', () => { if (!isServer()) { S.loading = true; renderPlayer(); } });
 onAudio('pause', () => {
@@ -893,7 +893,7 @@ video.addEventListener('error', () => {
   toast('This video can\'t be shown here. The song keeps playing.');
 });
 document.addEventListener('visibilitychange', syncVideo);
-window.gundilVisible = v => { S.visible = !!v; syncVideo(); };
+window.gundilVisible = v => { S.visible = !!v; syncVideo(); if (v) reportToAndroid(true); };
 
 /* A song's music video, from YouTube Music's song/video pairs. */
 async function findVideo(t) {
@@ -1255,20 +1255,49 @@ function sleepMenu(anchor) {
 /* The Android app shows a media notification and keeps playing in the background. */
 const android = window.GundilAndroid;
 let lastReport = '';
-function reportToAndroid() {
+function reportToAndroid(force) {
   if (!android) return;
   const t = current();
-  const msg = JSON.stringify(t ? {
-    hasTrack: true, title: t.title, artist: names(t), thumb: sized(t.thumb, 512),
+  const info = t ? {
+    hasTrack: true, title: t.title, artist: names(t), thumb: absUrl(sized(t.thumb, 512)),
     playing: !!(S.playing && !S.paused), interrupted: !!(S.interrupted && S.paused && !isServer()), local: !isServer(), where: isServer() ? `Playing on ${S.info.hostname || 'server'}` : '',
-  } : { hasTrack: false });
-  if (msg === lastReport) return;
-  lastReport = msg;
-  try { android.update(msg); } catch { /* old app version */ }
+    duration: Math.round((S.duration || t.duration || 0) * 1000),
+  } : { hasTrack: false };
+  const key = JSON.stringify(info);
+  if (key === lastReport && !force) return;
+  lastReport = key;
+  // Where the song is goes with each update (not a reason for one): the
+  // notification moves its progress bar on by itself while playing.
+  if (t) info.position = Math.round((S.position || 0) * 1000);
+  try { android.update(JSON.stringify(info)); } catch { /* old app version */ }
+  if (t) checkNotification(t.title);
+}
+const absUrl = u => { try { return u ? new URL(u, location.href).href : ''; } catch { return u; } };
+/* A few seconds after the song changes, check the notification shows it; if
+   not, say so in the server's log, with what the app knows, to find out why. */
+let notifCheck = null, notifReported = 0;
+function checkNotification(title) {
+  if (!android || !android.playbackInfo) return;
+  clearTimeout(notifCheck);
+  notifCheck = setTimeout(() => {
+    let st;
+    try { st = JSON.parse(android.playbackInfo()); } catch { return; }
+    const t = current();
+    if (!t || t.title !== title || isServer()) return;
+    const playing = !!(S.playing && !S.paused);
+    if (st.running && st.title === title && st.playing === playing) return;
+    if (Date.now() - notifReported < 10 * 60 * 1000) return;
+    notifReported = Date.now();
+    fetch('/api/layout-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      what: 'Android notification behind',
+      info: `plays "${title}" (${playing ? 'playing' : 'paused'}), notification ${JSON.stringify(st)}, visible ${document.visibilityState}, app ${(navigator.userAgent.match(/GundilMusicAndroid\/\S+/) || [''])[0]}`,
+    }) }).catch(() => {});
+  }, 4000);
 }
 window.gundilControl = cmd => {
   const playingNow = S.playing && !S.paused;
   if (cmd === 'pause' && !playingNow && S.interrupted) { S.interrupted = false; renderPlayer(); return; } // stay paused
+  if (cmd.startsWith('seek:')) { const s = parseFloat(cmd.slice(5)); if (isFinite(s)) seek(s); return; }
   if (cmd === 'toggle' || (cmd === 'play' && !playingNow) || (cmd === 'pause' && playingNow)) toggle();
   else if (cmd === 'next') next();
   else if (cmd === 'prev') prev();

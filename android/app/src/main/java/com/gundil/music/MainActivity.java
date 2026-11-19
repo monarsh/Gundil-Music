@@ -254,8 +254,20 @@ public class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        Intent pending = pendingUpdate;
+        if (pending != null && PlaybackService.instance == null) {
+            pendingUpdate = null;
+            try {
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(pending);
+                else startService(pending);
+            } catch (RuntimeException ignored) { }
+        }
+        // The page sends what's playing again, in case an update was lost in the background.
         if (web != null) js("window.gundilVisible && window.gundilVisible(true)");
     }
+
+    /** A "now playing" update Android didn't let us start the service for (from the background). */
+    static volatile Intent pendingUpdate;
 
     @Override
     protected void onStop() {
@@ -613,6 +625,12 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** What the notification shows now (see PlaybackService.describe). */
+        @JavascriptInterface
+        public String playbackInfo() {
+            return PlaybackService.describe();
+        }
+
         @JavascriptInterface
         public String version() {
             return BuildConfigVersion.name(app);
@@ -636,6 +654,8 @@ public class MainActivity extends Activity {
                 i.putExtra("local", o.optBoolean("local", true));
                 i.putExtra("hasTrack", o.optBoolean("hasTrack"));
                 i.putExtra("where", o.optString("where"));
+                i.putExtra("position", o.optLong("position"));
+                i.putExtra("duration", o.optLong("duration"));
                 if (o.optBoolean("hasTrack")) {
                     PlaybackService svc = PlaybackService.instance;
                     if (svc != null) {
@@ -644,8 +664,10 @@ public class MainActivity extends Activity {
                         try {
                             if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i);
                             else app.startService(i);
-                        } catch (RuntimeException ignored) {
-                            // Not allowed from the background; the next update while visible starts it.
+                            pendingUpdate = null;
+                        } catch (RuntimeException e) {
+                            // Not allowed from the background: start it when the app is next on screen.
+                            pendingUpdate = i;
                         }
                     }
                 } else {
