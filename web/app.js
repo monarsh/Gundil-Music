@@ -2663,15 +2663,147 @@ async function importLink(url, name = '', btn) {
   }
 }
 
+/* ---------- importing a playlist from a file ----------
+   Read here, on the device: CSV (Spotify exports such as Exportify, Google
+   Takeout's YouTube playlists, or any table with title and artist columns),
+   plain text (one song per line, "Artist - Title" or a YouTube link) and M3U.
+   Each song becomes a YouTube video id or a name the server looks for. */
+const YT_ID = /^[A-Za-z0-9_-]{11}$/;
+function youtubeId(s) {
+  s = String(s || '').trim();
+  const m = s.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  // A bare id: 11 characters, with a digit, - or _ (so a long word isn't taken for one).
+  return YT_ID.test(s) && /[\d_-]/.test(s) ? s : '';
+}
+function csvRows(text) {
+  const first = text.slice(0, text.indexOf('\n') >>> 0);
+  const count = c => first.split(c).length - 1;
+  const sep = [',', ';', '\t'].sort((a, b) => count(b) - count(a))[0];
+  const rows = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c;
+    } else if (c === '"' && cell === '') q = true;
+    else if (c === sep) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows.map(r => r.map(c => c.trim())).filter(r => r.some(Boolean));
+}
+function seconds(v, ms) {
+  v = String(v || '').trim();
+  if (!v) return 0;
+  if (/^\d+(\.\d+)?$/.test(v)) return ms ? Math.round(+v / 1000) : Math.round(+v);
+  const p = v.split(':').map(Number);
+  return p.every(n => !isNaN(n)) && p.length <= 3 ? p.reduce((a, n) => a * 60 + n, 0) : 0;
+}
+// A line of text or a file name: drop the folders, extension and track number.
+function songName(line) {
+  let s = line.trim().replace(/^.*[\\/]/, '').replace(/\.(mp3|m4a|flac|ogg|opus|wav|aac|wma|webm|mp4)$/i, '');
+  s = s.replace(/^\d{1,3}\s*[-.)_]\s+/, '').replace(/_/g, ' ');
+  return s.trim();
+}
+function parsePlaylistFile(text, fileName) {
+  text = text.replace(/^\uFEFF/, '');
+  const songs = [];
+  const add = (videoId, q, duration) => {
+    if (videoId) songs.push({ videoId });
+    else if (q) songs.push(duration ? { q, duration } : { q });
+  };
+  const table = /\.(csv|tsv)$/i.test(fileName) ? csvRows(text) : null;
+  if (table) {
+    const names = {
+      id: ['video id', 'videoid', 'youtube id', 'video_id'],
+      url: ['url', 'link', 'youtube url', 'youtube link', 'video url'],
+      title: ['track name', 'title', 'song', 'song name', 'track', 'track title', 'name', 'song title'],
+      artist: ['artist name(s)', 'artist name', 'artists', 'artist', 'artist(s)', 'performer', 'artist names'],
+      album: ['album name', 'album', 'album title'],
+      ms: ['duration (ms)', 'track duration (ms)', 'duration_ms', 'length (ms)'],
+      len: ['duration', 'length', 'time', 'track duration'],
+    };
+    // The header may come after a few lines about the playlist (Google Takeout).
+    const h = table.slice(0, 15).findIndex(r => r.some(c => [...names.id, ...names.title].includes(c.toLowerCase())));
+    if (h >= 0) {
+      const head = table[h].map(c => c.toLowerCase());
+      const col = k => names[k].map(n => head.indexOf(n)).find(i => i >= 0) ?? -1;
+      const c = Object.fromEntries(Object.keys(names).map(k => [k, col(k)]));
+      for (const r of table.slice(h + 1)) {
+        const get = k => (c[k] >= 0 ? r[c[k]] || '' : '');
+        const id = youtubeId(get('id')) || youtubeId(get('url'));
+        const artist = get('artist').split(/[;,]| & /)[0].trim();
+        const title = get('title');
+        add(id, [title, artist].filter(Boolean).join(' '), c.ms >= 0 ? seconds(get('ms'), true) : seconds(get('len')));
+      }
+      return songs;
+    }
+  }
+  // Plain text, M3U, or a table without a header: a song per line.
+  let duration = 0;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const ext = line.match(/^#EXTINF:\s*(-?\d+)[^,]*,(.*)$/i);
+    if (ext) { duration = +ext[1] > 0 ? +ext[1] : 0; continue; }
+    if (line.startsWith('#')) continue; // other M3U lines and comments
+    const id = youtubeId(line);
+    add(id, id ? '' : songName(table ? line.replace(/[,;\t]+/g, ' ') : line), duration);
+    duration = 0;
+  }
+  return songs;
+}
+async function importFile(file, name, status) {
+  let songs;
+  try {
+    if (file.size > 8 << 20) throw new Error('That file is too big for a playlist');
+    songs = parsePlaylistFile(await file.text(), file.name);
+  } catch (e) { return toast(e.message); }
+  if (!songs.length) return toast('No songs found in that file');
+  if (songs.length > 2000) return toast(`That file has ${songs.length} songs; Gundil Music imports up to 2000 at once`);
+  status.hidden = false;
+  status.innerHTML = `<span class="spinner small"></span>Finding ${plural(songs.length, 'song')} on YouTube Music… ${songs.length > 50 ? 'this can take a few minutes' : 'a moment'}`;
+  try {
+    const r = await api('import/file', 'POST', { name: name || file.name.replace(/\.[^.]+$/, ''), file: file.name, items: songs });
+    setUser(r.state);
+    if ($('#dlg').open) $('#dlg').close();
+    location.hash = '#/playlist/' + enc(r.id);
+    const repeats = r.total - r.count - (r.notFound || 0);
+    const repeatNote = repeats > 0 ? ` ${plural(repeats, 'repeat')} of a song already in it ${repeats === 1 ? 'was' : 'were'} left out.` : '';
+    if (r.missing && r.missing.length) {
+      const more = r.notFound - r.missing.length;
+      dialog(`<div class="ask"><div class="dlg-head"><h2>Imported ${plural(r.count, 'song')}</h2></div>
+        <p class="muted">Into “${esc(r.name)}”.${repeatNote} ${r.notFound === 1 ? 'This song was' : `These ${r.notFound} songs were`} not found on YouTube Music:</p>
+        <ul class="imp-missing">${r.missing.map(m => `<li>${esc(m)}</li>`).join('')}${more > 0 ? `<li class="muted">and ${more} more</li>` : ''}</ul>
+        <div class="dlg-actions"><button class="btn white" onclick="this.closest('dialog').close()">OK</button></div></div>`);
+    } else toast(`Imported ${plural(r.count, 'song')} into “${r.name}”.${repeatNote}`);
+  } catch (e) {
+    status.textContent = e.message;
+  }
+}
+
 async function importDialog(prefill = '') {
   const d = dialog(`<form method="dialog" class="ask"><div class="dlg-head"><h2>Import playlist</h2><button class="icon-btn" value="cancel" aria-label="Close">${icon('close')}</button></div>
     <p class="muted">Paste a link to a YouTube Music or YouTube playlist or album. Every song is copied into a playlist of your own, which you can reorder and edit.</p>
     <label>Link<input name="url" value="${esc(prefill)}" placeholder="https://music.youtube.com/playlist?list=…" autocomplete="off" spellcheck="false"></label>
     <label><span>Name <span class="muted small">(optional)</span></span><input name="name" placeholder="Same as on YouTube Music" autocomplete="off"></label>
     <div class="dlg-actions"><button class="btn white" value="ok" data-go>Import</button></div>
+    <h3>From a file</h3>
+    <div class="set-row"><div class="set-text"><b>CSV, TXT or M3U</b><span>A Spotify or YouTube export, or a list with a song per line (“Artist - Title” or a YouTube link). The name above is used if you give one.</span></div>
+      <label class="btn small filepick-btn">Choose file<input type="file" name="file" accept=".csv,.tsv,.txt,.m3u,.m3u8,text/csv,text/plain" hidden></label></div>
+    <p class="muted small imp-status" hidden></p>
     <div class="import-lib"></div></form>`);
   const form = $('form', d);
   form.url.focus();
+  form.file.addEventListener('change', () => {
+    const f = form.file.files[0];
+    form.file.value = '';
+    if (f) importFile(f, form.name.value.trim(), $('.imp-status', d));
+  });
   form.addEventListener('submit', e => {
     if (!e.submitter || e.submitter.value !== 'ok') return;
     e.preventDefault();

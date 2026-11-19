@@ -31,6 +31,7 @@ import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -252,8 +253,48 @@ public class MainActivity extends Activity {
             web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
         web.addJavascriptInterface(new Bridge(app), "GundilAndroid");
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new Chrome());
         web.setWebViewClient(new Client(app));
+    }
+
+    private static final int PICK_FILE = 7;
+    private static ValueCallback<Uri[]> picking;
+
+    /**
+     * Lets the page's file buttons (a playlist file to import, a cookies.txt
+     * to link an account) open Android's file picker, from whichever screen
+     * shows the page now: the WebView outlives screens while music plays.
+     */
+    static final class Chrome extends WebChromeClient {
+        @Override
+        public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+            if (picking != null) picking.onReceiveValue(null);
+            picking = null;
+            MainActivity a = instance;
+            if (a == null) {
+                callback.onReceiveValue(null);
+                return true;
+            }
+            Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            pick.setType("*/*"); // CSV, TXT and M3U files come with all sorts of types
+            try {
+                a.startActivityForResult(Intent.createChooser(pick, "Choose a file"), PICK_FILE);
+                picking = callback;
+            } catch (Exception e) {
+                callback.onReceiveValue(null);
+            }
+            return true;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == PICK_FILE && picking != null) {
+            picking.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data));
+            picking = null;
+        }
     }
 
     /** Handles the page's links, sign-in prompts and errors. Holds no screen. */

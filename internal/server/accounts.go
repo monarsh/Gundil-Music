@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -604,6 +605,115 @@ func (s *Server) accountRoutes(mux *http.ServeMux) {
 		s.stateChanged(r)
 		writeJSON(w, map[string]any{"id": p.ID, "name": p.Name, "count": len(p.Tracks), "state": json.RawMessage(s.lib(r).JSON())})
 	})
+
+	// A playlist from a file (CSV, TXT or M3U), read on the device: each song
+	// is a YouTube video id or a name to look for on YouTube Music.
+	mux.HandleFunc("POST /api/import/file", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Name  string     `json:"name"`
+			File  string     `json:"file"`
+			Items []fileSong `json:"items"`
+		}
+		if err := readBody(r, &b); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		tracks, missing, notFound, err := s.findFileSongs(r.Context(), b.Items)
+		if err != nil {
+			fail(w, 502, err)
+			return
+		}
+		if len(tracks) == 0 {
+			fail(w, 400, errors.New("none of the songs in that file were found on YouTube Music"))
+			return
+		}
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			name = "Imported playlist"
+		}
+		about := "Imported from a file"
+		if f := strings.TrimSpace(b.File); f != "" {
+			about = "Imported from " + clipText(f, 80)
+		}
+		p, err := s.lib(r).CreatePlaylist(clipText(name, 150), about, tracks)
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		s.stateChanged(r)
+		writeJSON(w, map[string]any{"id": p.ID, "name": p.Name, "count": len(p.Tracks), "total": len(b.Items),
+			"missing": missing, "notFound": notFound, "state": json.RawMessage(s.lib(r).JSON())})
+	})
+}
+
+// fileSong is one song of a playlist file: a YouTube video id, or a name
+// (title and artist) to look for, with its length when the file says.
+type fileSong struct {
+	VideoID  string  `json:"videoId,omitempty"`
+	Q        string  `json:"q,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+}
+
+const maxFileSongs = 2000
+
+// findFileSongs looks a file's songs up on YouTube Music, in order, leaving
+// out repeats. missing names (up to 50 of) the notFound songs nothing was
+// found for.
+func (s *Server) findFileSongs(ctx context.Context, songs []fileSong) (tracks []model.Track, missing []string, notFound int, err error) {
+	if len(songs) == 0 {
+		return nil, nil, 0, errors.New("no songs found in that file")
+	}
+	if len(songs) > maxFileSongs {
+		return nil, nil, 0, fmt.Errorf("that file has %d songs; Gundil Music imports up to %d at once", len(songs), maxFileSongs)
+	}
+	labels := make([]string, len(songs)) // how the file names each song, for missing
+	for i := range songs {
+		songs[i].Q = clipText(strings.TrimSpace(songs[i].Q), 300)
+		labels[i] = cmp.Or(songs[i].Q, clipText(songs[i].VideoID, 40))
+		if !model.ValidID(songs[i].VideoID) {
+			songs[i].VideoID = ""
+		}
+	}
+	list, _ := json.Marshal(songs)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	data, err := s.YT.Call(ctx, "find", map[string]string{"items": string(list)})
+	if err != nil {
+		return nil, nil, 0, errors.New(firstLine(err.Error()))
+	}
+	var got struct {
+		Tracks []*model.Track `json:"tracks"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		return nil, nil, 0, err
+	}
+	seen := map[string]bool{}
+	for i := range songs {
+		var t *model.Track
+		if i < len(got.Tracks) {
+			t = got.Tracks[i]
+		}
+		if t == nil || !t.Valid() {
+			notFound++
+			if len(missing) < 50 {
+				missing = append(missing, labels[i])
+			}
+			continue
+		}
+		if !seen[t.VideoID] {
+			seen[t.VideoID] = true
+			tracks = append(tracks, *t)
+		}
+	}
+	return tracks, missing, notFound, nil
+}
+
+// clipText cuts s to at most n runes.
+func clipText(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // ---------- Google cookies ----------

@@ -306,6 +306,8 @@ func callTimeout(method string) time.Duration {
 		return 60 * time.Second
 	case "diagnose":
 		return 2 * time.Minute
+	case "find": // the songs of a playlist imported from a file, up to 2000
+		return 15 * time.Minute
 	}
 	return 30 * time.Second
 }

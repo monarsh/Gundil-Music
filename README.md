@@ -17,7 +17,7 @@ What you get, laid out like YouTube Music:
 - **Drag to reorder** Up next and your playlists, and a **sleep timer**
 - **Settings**: audio and video quality, region and language, daily YouTube updates, clearing history
 - **Library**: playlists, Liked Music (thumbs up), saved albums, subscribed artists, history
-- **Import playlists** from YouTube Music or YouTube by link, or your private ones and Liked Music from your linked account
+- **Import playlists** from YouTube Music or YouTube by link, from a CSV, TXT or M3U file (Spotify and Google Takeout exports work), or your private ones and Liked Music from your linked account
 - **Accounts**: optional sign-in, so each person gets their own library, playlists and history
 - **Speakers & Bluetooth**: play on this device or on the server, scan, pair and connect speakers
 - **Background play**: keeps playing when the app is minimised, swiped away from Recents or the screen is off, for free
@@ -273,6 +273,18 @@ Music accounts use a name and password instead.
 - **From a YouTube or YouTube Music page in the app**: ⋮ → **Import as my playlist**.
 - **Your private playlists and Liked Music**: link your YouTube Music account
   first. **Import playlist** then lists your YouTube Music library, one tap each.
+- **From a file**: **Import playlist → Choose file** takes a CSV, TXT or M3U
+  file, read on your phone or computer:
+  - **CSV**: a Spotify export (such as from Exportify), a Google Takeout YouTube
+    playlist (its Video ID column), or any table with title and artist columns
+    (separated by commas, semicolons or tabs).
+  - **TXT**: one song per line, as `Artist - Title` or a YouTube / YouTube Music link.
+  - **M3U / M3U8**: a music player's playlist; songs are found by their names.
+
+  Songs given by name are looked up on YouTube Music (the one of the right
+  length, when the file says how long it is). The playlist takes the file's name
+  unless you type one, repeats are left out, and the songs that weren't found
+  are listed afterwards. Up to 2000 songs per file.
 
 ## Linking your YouTube Music account
 

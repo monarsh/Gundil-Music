@@ -456,6 +456,55 @@ def m_watch(args):
     }
 
 
+def m_find(args):
+    """Finds the songs of a playlist imported from a file. items is a JSON list
+    of {"videoId"} or {"q": "title artist", "duration": seconds}; the answer
+    has a track (or null, when nothing was found) for each, in order."""
+    from concurrent.futures import ThreadPoolExecutor as Pool
+    entries = json.loads(args.get("items") or "[]")[:2000]
+
+    def by_id(vid):
+        w = yt().get_watch_playlist(videoId=vid, limit=1)
+        for x in w.get("tracks") or []:
+            t = track(x)
+            if t and t.get("videoId") == vid:
+                return t
+        return None
+
+    def by_name(q, duration):
+        for flt in ("songs", "videos"):
+            found = [t for t in (item(r) for r in yt().search(q, filter=flt, limit=6))
+                     if t and t.get("videoId") and t.get("type") in ("song", "video")]
+            if not found:
+                continue
+            if duration:
+                # The file says how long the song is: prefer the result that
+                # long (another version, a live take or a remix rarely is).
+                close = [t for t in found if t.get("duration") and abs(t["duration"] - duration) <= 8]
+                if close:
+                    return close[0]
+                if flt == "songs" and all(t.get("duration") for t in found[:3]):
+                    continue  # none is the right length: look among videos too
+            return found[0]
+        return None
+
+    def one(e):
+        try:
+            vid = str(e.get("videoId") or "").strip()
+            if vid:
+                return by_id(vid)
+            q = str(e.get("q") or "").strip()[:300]
+            if not q:
+                return None
+            d = e.get("duration") or 0
+            return by_name(q, int(d) if isinstance(d, (int, float)) else 0)
+        except Exception:  # noqa: BLE001 - one song not found doesn't stop the rest
+            return None
+
+    with Pool(max_workers=6) as pool:
+        return {"tracks": list(pool.map(one, entries))}
+
+
 def m_lyrics(args):
     try:
         lyr = yt().get_lyrics(args["id"], timestamps=True)
