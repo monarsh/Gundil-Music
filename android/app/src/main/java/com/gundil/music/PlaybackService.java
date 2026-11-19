@@ -187,10 +187,25 @@ public class PlaybackService extends Service {
             }
             thumb = t;
         }
-        refresh();
+        scheduleRefresh();
+    }
+
+    private final Runnable refreshNow = this::refresh;
+
+    /**
+     * Shows the latest update a moment later. A song change sends several
+     * updates in quick succession, and Android drops notification updates
+     * that come faster than a few a second, so the notification could be
+     * left showing an earlier song. Waiting for them to settle shows the
+     * last one.
+     */
+    private void scheduleRefresh() {
+        handler.removeCallbacks(refreshNow);
+        handler.postDelayed(refreshNow, 300);
     }
 
     private void refresh() {
+        handler.removeCallbacks(refreshNow);
         // Hold locks only while this phone itself is streaming audio (or waits to play on).
         boolean active = local && (playing || interrupted);
         if (active) {
@@ -262,7 +277,7 @@ public class PlaybackService extends Service {
                     Bitmap bmp = BitmapFactory.decodeStream(in);
                     if (bmp != null && url.equals(artFor)) {
                         art = bmp;
-                        new android.os.Handler(getMainLooper()).post(this::refresh);
+                        handler.post(this::scheduleRefresh);
                     }
                 }
             } catch (Exception ignored) {

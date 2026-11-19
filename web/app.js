@@ -739,6 +739,7 @@ function renderRating() {
 }
 
 function renderPlayer() {
+  reportToAndroid(); // first, so nothing below can keep the Android notification behind
   const t = current();
   const id = t ? t.videoId : null;
   $('#bar').classList.toggle('empty', !t);
