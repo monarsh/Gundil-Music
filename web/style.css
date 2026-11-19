@@ -322,7 +322,7 @@ img { display: block; }
 .pp-art.show-video { aspect-ratio: 16 / 9; height: auto; width: 100%; background: #000; }
 .pp-art.show-video #pp-video { opacity: 1; pointer-events: auto; }
 .pp-art.show-video .pp-img { visibility: hidden; }
-.pp-fs { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, .5); display: none; }
+.pp-fs { position: absolute; right: 8px; top: 8px; background: rgba(0, 0, 0, .5); display: none; transition: opacity .2s; }
 .pp-art.show-video .pp-fs { display: inline-grid; }
 .pp-art.fs { position: fixed; inset: 0; z-index: 200; width: auto; height: auto; max-width: none; max-height: none; margin: 0; aspect-ratio: auto; border-radius: 0; box-shadow: none; }
 .drag-handle { color: var(--text2); cursor: grab; touch-action: none; }
@@ -738,3 +738,22 @@ dialog select { border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; p
 .art-flash.on { animation: art-flash .6s ease-out; }
 @keyframes art-flash { 0% { opacity: 1; transform: scale(.8); } 100% { opacity: 0; transform: scale(1.2); } }
 .pp-art.fs .art-flash { display: none; }
+
+/* With a mouse, the full-screen button shows while it's over the video, as in YouTube Music. */
+@media (hover: hover) and (pointer: fine) {
+  .pp-art.show-video:not(.fs) .pp-fs { opacity: 0; }
+  .pp-art.show-video:not(.fs):hover .pp-fs, .pp-art .pp-fs:focus-visible { opacity: 1; }
+}
+
+/* ---------- full screen on a computer, as in YouTube Music ----------
+   The video fills the screen and the player bar stays along the bottom;
+   both the bar and the pointer hide while the mouse rests. */
+body.desk-fs #pp { z-index: 100; }
+body.desk-fs .pp-art.fs { background: #000; cursor: pointer; }
+body.desk-fs .pp-art.fs .fs-ui { display: none; }
+body.desk-fs .pp-art.fs .art-flash { display: grid; }
+body.desk-fs #bar { position: fixed; bottom: 0; z-index: 150; height: 96px; padding-top: 24px; background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, .75) 40%); transition: opacity .3s; }
+body.desk-fs #bar #seek { left: 20px; right: 20px; top: 12px; width: auto; }
+body.desk-fs #bar .icon-btn, body.desk-fs .b-sub, body.desk-fs .b-time { color: #fff; }
+body.desk-fs.fs-idle #bar { opacity: 0; pointer-events: none; }
+body.desk-fs.fs-idle, body.desk-fs.fs-idle .pp-art.fs { cursor: none; }

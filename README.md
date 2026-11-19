@@ -345,6 +345,9 @@ page is open. The Android app always opens offline.
 - **Menus** that open from the bottom: pull down to close.
 - **Any page:** pull down at the top to load it again.
 - **Cover or video in the player:** tap to play or pause.
+- **Full screen on a computer** looks like YouTube Music's: the video fills the
+  screen with the player bar along the bottom (it hides while the mouse rests).
+  Click the video to play or pause, double-click or press Esc to leave.
 - **Full-screen video:** tap for the controls (they fade after 3 seconds while
   playing), double-tap the left or right to skip 10 seconds, swipe down to leave.
 

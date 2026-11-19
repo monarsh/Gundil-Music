@@ -763,7 +763,7 @@ function renderPlayer() {
     el.innerHTML = icon(S.repeat === 'one' ? 'repeatOne' : 'repeat');
     el.title = { off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' }[S.repeat];
   }
-  $('#b-expand').innerHTML = icon(S.ppOpen ? 'down' : 'up');
+  renderExpand();
   $('#pp-where').textContent = S.source ? `Playing from ${S.source}` : '';
   for (const b of $$('#pp-mode button, .fs-mode button')) b.classList.toggle('on', b.dataset.mode === (isServer() ? 'song' : S.mode));
   $('#pp-mode').classList.toggle('off', isServer());
@@ -911,13 +911,41 @@ async function setMode(mode) {
 const inAndroidApp = () => !!(window.GundilAndroid && window.GundilAndroid.fullscreen);
 let fsByRotation = false; // full screen because the phone was turned sideways
 
+/* On a computer, full screen is YouTube Music's desktop one: the video
+   fills the screen with the player bar along the bottom (hidden while the
+   mouse rests), and a click plays or pauses. Phones and the Android app get
+   the controls over the picture instead. */
+const deskFullscreen = () => !inAndroidApp() && innerWidth > 760 && matchMedia('(hover: hover) and (pointer: fine)').matches;
+function inDeskFs() { return document.body.classList.contains('desk-fs'); }
+let deskIdleTimer = null;
+function deskWake() {
+  document.body.classList.remove('fs-idle');
+  clearTimeout(deskIdleTimer);
+  if (!inDeskFs()) return;
+  deskIdleTimer = setTimeout(() => {
+    if (S.playing && !S.paused && !$('#bar').matches(':hover, :focus-within') && !seeking) document.body.classList.add('fs-idle');
+    else deskWake();
+  }, 3000);
+}
+addEventListener('mousemove', deskWake);
+addEventListener('keydown', deskWake);
+function renderExpand() {
+  const b = $('#b-expand');
+  b.innerHTML = icon(inDeskFs() ? 'fullscreenExit' : S.ppOpen ? 'down' : 'up');
+  b.setAttribute('aria-label', inDeskFs() ? 'Exit full screen' : S.ppOpen ? 'Close player' : 'Open player');
+}
+
 /* auto: entered by turning the phone sideways, so turning it back leaves. */
 function setFullscreen(on, auto = false) {
   const art = $('#pp-art');
   if (on === art.classList.contains('fs')) return;
   art.classList.toggle('fs', on);
   fsByRotation = on && auto;
-  if (on) { fsShow(); fitFullscreen(); setTimeout(fitFullscreen, 300); setTimeout(reportFullscreen, 1200); } else { fsHide(); fitFullscreen(); }
+  const desk = on && !auto && deskFullscreen();
+  document.body.classList.toggle('desk-fs', desk);
+  deskWake();
+  renderExpand();
+  if (on) { if (!desk) fsShow(); fitFullscreen(); setTimeout(fitFullscreen, 300); if (!desk) setTimeout(reportFullscreen, 1200); } else { fsHide(); fitFullscreen(); }
   $('#pp-fs').innerHTML = icon(on ? 'fullscreenExit' : 'fullscreen');
   $('#pp-fs').setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
   if (inAndroidApp()) {
@@ -928,7 +956,9 @@ function setFullscreen(on, auto = false) {
     return;
   }
   try {
-    if (on && art.requestFullscreen && document.fullscreenEnabled) art.requestFullscreen().catch(() => {});
+    // On a computer the whole page goes full screen, so the player bar shows too.
+    const el = desk ? document.documentElement : art;
+    if (on && el.requestFullscreen && document.fullscreenEnabled) el.requestFullscreen().catch(() => {});
     else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   } catch { /* not supported: the page-filling view is enough */ }
 }
@@ -1008,8 +1038,8 @@ function fsShow() {
 let artFlashTimer = null;
 function fsTap(e) {
   const art = $('#pp-art');
-  if (!art.classList.contains('fs')) {
-    // Outside full screen, tapping the cover or the video plays or pauses.
+  if (!art.classList.contains('fs') || inDeskFs()) {
+    // Outside full screen (and in a computer's), tapping the cover or the video plays or pauses.
     if (!current()) return;
     const willPlay = !(S.playing && !S.paused);
     toggle();
@@ -1059,6 +1089,12 @@ function fsTap(e) {
     if (dy > 90 && Math.abs(dx) < dy / 2) { swipedAt = Date.now(); setFullscreen(false); }
   });
 }
+
+$('#pp-art').addEventListener('dblclick', e => {
+  const art = $('#pp-art');
+  if (e.target.closest('button, input') || !art.classList.contains('show-video') || !(inDeskFs() || (!art.classList.contains('fs') && deskFullscreen()))) return;
+  setFullscreen(!art.classList.contains('fs'));
+});
 
 /* The Android app reports turning the phone: sideways shows a playing video full screen. */
 window.gundilOrientation = landscape => {
@@ -3148,7 +3184,7 @@ document.addEventListener('click', async e => {
       case 'mute': return void toggleMute();
       case 'autoplay': return void setAutoplay(!S.autoplay);
       case 'pp-open': if (!e.target.closest('button, a')) openPlayer(); return;
-      case 'pp-toggle': return void (S.ppOpen ? closePlayer() : openPlayer());
+      case 'pp-toggle': return void (inDeskFs() ? setFullscreen(false) : S.ppOpen ? closePlayer() : openPlayer());
       case 'pp-close': return void closePlayer();
       case 'pp-tab': return void setPPTab(actEl.dataset.tab);
       case 'like-current': if (current()) await rate(current(), 'like'); return;
