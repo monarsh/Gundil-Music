@@ -3,7 +3,7 @@
 // keeps in IndexedDB). Browsers only run this on https or localhost; the
 // Android app keeps its own copy of the shell.
 // API calls, audio and artwork otherwise always go to the network.
-const CACHE = 'gundil-shell-v9';
+const CACHE = 'gundil-shell-v10';
 const SHELL = ['./', 'style.css', 'app.js', 'icon.svg', 'icon-192.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {

@@ -344,6 +344,7 @@ page is open. The Android app always opens offline.
   (or pull down from the top of the list) to close it.
 - **Menus** that open from the bottom: pull down to close.
 - **Any page:** pull down at the top to load it again.
+- **Cover or video in the player:** tap to play or pause.
 - **Full-screen video:** tap for the controls (they fade after 3 seconds while
   playing), double-tap the left or right to skip 10 seconds, swipe down to leave.
 

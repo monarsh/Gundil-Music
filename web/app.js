@@ -1005,9 +1005,23 @@ function fsShow() {
   fsHideTimer = null;
   if (S.playing && !S.paused) fsHideTimer = setTimeout(() => (seeking ? fsShow() : fsHide()), 3000);
 }
+let artFlashTimer = null;
 function fsTap(e) {
   const art = $('#pp-art');
-  if (!art.classList.contains('fs')) return;
+  if (!art.classList.contains('fs')) {
+    // Outside full screen, tapping the cover or the video plays or pauses.
+    if (!current()) return;
+    const willPlay = !(S.playing && !S.paused);
+    toggle();
+    const f = $('#art-flash');
+    f.innerHTML = icon(willPlay ? 'play' : 'pause');
+    f.classList.remove('on');
+    void f.offsetWidth; // restart the fade
+    f.classList.add('on');
+    clearTimeout(artFlashTimer);
+    artFlashTimer = setTimeout(() => f.classList.remove('on'), 600);
+    return;
+  }
   const w = art.clientWidth, x = e.clientX, now = Date.now();
   const side = x < w / 3 ? -1 : x > w * 2 / 3 ? 1 : 0;
   if (side && now - fsLastTap.at < 300 && Math.abs(x - fsLastTap.x) < 80) {
