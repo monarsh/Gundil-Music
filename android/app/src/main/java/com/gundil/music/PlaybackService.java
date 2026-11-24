@@ -50,7 +50,7 @@ public class PlaybackService extends Service {
     private static MediaSession shared;
     private PowerManager.WakeLock wake;
     private WifiManager.WifiLock wifi;
-    private String title = "", artist = "", thumb = "", where = "", artFor = "";
+    private String title = "", artist = "", thumb = "", where = "", artFor = "", id = "", album = "";
     private boolean playing, local = true;
     /** Where the song is (ms) when the page last said, and when; how long it is. */
     private long position, positionAt, duration;
@@ -181,6 +181,8 @@ public class PlaybackService extends Service {
     void apply(Intent intent) {
         {
             title = intent.getStringExtra("title");
+            id = intent.getStringExtra("id");
+            album = intent.getStringExtra("album");
             artist = intent.getStringExtra("artist");
             String t = intent.getStringExtra("thumb");
             playing = intent.getBooleanExtra("playing", false);
@@ -234,9 +236,16 @@ public class PlaybackService extends Service {
         }
 
         try {
+            // The media ID, and the display title and subtitle, tell the phone
+            // this is another song: some (Xiaomi's HyperOS) changed the picture
+            // on the card but kept the old title without them.
             MediaMetadata.Builder md = new MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, id == null || id.isEmpty() ? String.valueOf(title) : id)
                     .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist);
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                    .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, artist);
+            if (album != null && !album.isEmpty()) md.putString(MediaMetadata.METADATA_KEY_ALBUM, album);
             if (duration > 0) md.putLong(MediaMetadata.METADATA_KEY_DURATION, duration);
             if (art != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art);
             session.setActive(true);

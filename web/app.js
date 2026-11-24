@@ -1262,7 +1262,7 @@ function reportToAndroid(force) {
   if (!android) return;
   const t = current();
   const info = t ? {
-    hasTrack: true, title: t.title, artist: names(t), thumb: absUrl(sized(t.thumb, 512)),
+    hasTrack: true, id: t.videoId, title: t.title, artist: names(t), album: t.album ? t.album.name || '' : '', thumb: absUrl(sized(t.thumb, 512)),
     playing: !!(S.playing && !S.paused), interrupted: !!(S.interrupted && S.paused && !isServer()), local: !isServer(), where: isServer() ? `Playing on ${S.info.hostname || 'server'}` : '',
     duration: Math.round((S.duration || t.duration || 0) * 1000),
   } : { hasTrack: false };

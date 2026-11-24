@@ -644,6 +644,8 @@ public class MainActivity extends Activity {
                 Intent i = new Intent(app, PlaybackService.class);
                 i.setAction(PlaybackService.ACTION_UPDATE);
                 i.putExtra("title", o.optString("title"));
+                i.putExtra("id", o.optString("id"));
+                i.putExtra("album", o.optString("album"));
                 i.putExtra("artist", o.optString("artist"));
                 i.putExtra("thumb", o.optString("thumb"));
                 i.putExtra("playing", o.optBoolean("playing"));
