@@ -683,16 +683,19 @@ onAudio('error', async () => {
   else { S.paused = true; S.stuck = t ? t.videoId : ''; renderPlayer(); }
 });
 
-/* Lock screen, notification and Bluetooth headset buttons. */
+/* Lock screen, notification and Bluetooth headset buttons. Not in the
+   Android app, which has its own (a second media card from the WebView, on
+   some phones, showed an earlier song). */
+const webMediaSession = 'mediaSession' in navigator && !window.GundilAndroid;
 function updateMediaSession(t) {
-  if (!('mediaSession' in navigator)) return;
+  if (!webMediaSession) return;
   if (!t || isServer()) { navigator.mediaSession.metadata = null; return; }
   navigator.mediaSession.metadata = new MediaMetadata({
     title: t.title, artist: names(t), album: t.album ? t.album.name : '',
     artwork: t.thumb ? [{ src: sized(t.thumb, 512), sizes: '512x512' }] : [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }],
   });
 }
-if ('mediaSession' in navigator) {
+if (webMediaSession) {
   const handlers = { play: toggle, pause: toggle, previoustrack: prev, nexttrack: next, seekto: e => seek(e.seekTime) };
   for (const [name, fn] of Object.entries(handlers)) {
     try { navigator.mediaSession.setActionHandler(name, fn); } catch { /* unsupported */ }
@@ -781,7 +784,7 @@ function renderPlayer() {
     else if ($('#pp-art').classList.contains('ui') && !fsHideTimer) fsShow(); // playing again: fade them later
   }
   document.body.classList.toggle('paused', !playing);
-  if ('mediaSession' in navigator && !isServer()) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+  if (webMediaSession && !isServer()) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
   for (const el of [$('#b-shuffle'), $('#pp-shuffle'), $('#fs-shuffle')]) { el.classList.toggle('on', S.shuffle); el.classList.toggle('dim', !S.shuffle); }
   for (const el of [$('#b-repeat'), $('#pp-repeat'), $('#fs-repeat')]) {
     el.classList.toggle('on', S.repeat !== 'off');
@@ -1285,11 +1288,11 @@ function checkNotification(title) {
     const t = current();
     if (!t || t.title !== title || isServer()) return;
     const playing = !!(S.playing && !S.paused);
-    if (st.running && st.title === title && st.playing === playing) return;
-    if (Date.now() - notifReported < 10 * 60 * 1000) return;
-    notifReported = Date.now();
+    const ok = st.running && st.title === title && st.playing === playing;
+    if (ok ? notifReported : Date.now() - notifReported < 10 * 60 * 1000) return;
+    notifReported = ok ? 1 : Date.now(); // the first check is logged either way, to show it runs
     fetch('/api/layout-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-      what: 'Android notification behind',
+      what: ok ? 'Android notification ok' : 'Android notification behind',
       info: `plays "${title}" (${playing ? 'playing' : 'paused'}), notification ${JSON.stringify(st)}, visible ${document.visibilityState}, app ${(navigator.userAgent.match(/GundilMusicAndroid\/\S+/) || [''])[0]}`,
     }) }).catch(() => {});
   }, 4000);

@@ -42,6 +42,12 @@ public class PlaybackService extends Service {
     static volatile PlaybackService instance;
 
     private MediaSession session;
+    /**
+     * One media session for as long as the app runs. A new one each time the
+     * service started left the old one's card on some phones (seen on
+     * Xiaomi's HyperOS), stuck on an earlier song, in place of the live one.
+     */
+    private static MediaSession shared;
     private PowerManager.WakeLock wake;
     private WifiManager.WifiLock wifi;
     private String title = "", artist = "", thumb = "", where = "", artFor = "";
@@ -112,7 +118,8 @@ public class PlaybackService extends Service {
             ch.setShowBadge(false);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
-        session = new MediaSession(this, "GundilMusic");
+        if (shared == null) shared = new MediaSession(getApplicationContext(), "GundilMusic");
+        session = shared;
         session.setCallback(new MediaSession.Callback() {
             @Override public void onPlay() { control("play"); }
             @Override public void onPause() { control("pause"); }
@@ -322,7 +329,11 @@ public class PlaybackService extends Service {
         try { unregisterReceiver(noisy); } catch (RuntimeException ignored) { }
         if (wake.isHeld()) wake.release();
         if (wifi != null && wifi.isHeld()) wifi.release();
-        session.release();
+        // Kept for the next start (see shared); nothing plays, so no card.
+        try {
+            session.setPlaybackState(new PlaybackState.Builder().setState(PlaybackState.STATE_STOPPED, 0, 0f).build());
+            session.setActive(false);
+        } catch (RuntimeException ignored) { }
         super.onDestroy();
     }
 
